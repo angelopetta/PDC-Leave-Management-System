@@ -1,6 +1,6 @@
-# KI Leave Tracker
+# PDC-Leave-Management-System
 
-Leave management system for KI.
+Leave management system for KI. See `docs/PRD.md` for the full spec.
 
 ## Structure
 
