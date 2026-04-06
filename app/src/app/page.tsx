@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 import { vacationTierForYears } from "../../../policy/rules";
 
 export const dynamic = "force-dynamic";
@@ -37,7 +37,9 @@ function formatEmploymentType(type: string): string {
 }
 
 export default async function EmployeesPage() {
-  const supabase = await createClient();
+  // Admin client bypasses RLS — appropriate for this read-only dashboard
+  // until auth + RLS policies are wired up.
+  const supabase = createAdminClient();
 
   const { data: employees, error } = await supabase
     .from("employees")
