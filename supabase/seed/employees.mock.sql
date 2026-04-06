@@ -2,6 +2,8 @@
 -- Source: fixtures/KI-Employee-Roster-Mock.xlsx
 -- Reference date for years-of-service: April 1, 2026 (FY 2026/27 start).
 -- Exercises all five vacation tiers. Replace with real data before production.
+--
+-- Run AFTER policy_and_leave_types.sql.
 
 insert into employees (
   employee_code, first_name, last_name, email, job_title, department,
