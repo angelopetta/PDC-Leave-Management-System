@@ -1,0 +1,2 @@
+-- Mock employee roster seed data.
+-- TODO: populate from fixtures/employee-roster.mock.xlsx.

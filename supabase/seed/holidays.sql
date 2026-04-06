@@ -1,0 +1,2 @@
+-- KI holidays seed data (11 holidays).
+-- TODO: populate from PRD.
