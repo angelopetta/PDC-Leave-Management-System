@@ -1,5 +1,6 @@
 import Link from "next/link";
-import { createAdminClient } from "@/lib/supabase/admin";
+import { createClient } from "@/lib/supabase/server";
+import { signOut } from "./auth/actions";
 import { vacationTierForYears } from "../../../policy/rules";
 
 export const dynamic = "force-dynamic";
@@ -37,9 +38,13 @@ function formatEmploymentType(type: string): string {
 }
 
 export default async function EmployeesPage() {
-  // Admin client bypasses RLS — appropriate for this read-only dashboard
-  // until auth + RLS policies are wired up.
-  const supabase = createAdminClient();
+  // RLS-respecting server client. Middleware guarantees we have a session
+  // here; RLS decides which rows the current employee can read.
+  const supabase = await createClient();
+
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
 
   const { data: employees, error } = await supabase
     .from("employees")
@@ -59,18 +64,33 @@ export default async function EmployeesPage() {
   return (
     <main className="min-h-screen bg-zinc-50 p-8 dark:bg-zinc-950">
       <div className="mx-auto max-w-6xl">
-        <header className="mb-8">
-          <h1 className="text-3xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
-            PDC Leave Management System
-          </h1>
-          <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">
-            Employees — as of fiscal year starting{" "}
-            {fyStart.toLocaleDateString("en-CA", {
-              year: "numeric",
-              month: "long",
-              day: "numeric",
-            })}
-          </p>
+        <header className="mb-8 flex items-start justify-between gap-4">
+          <div>
+            <h1 className="text-3xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
+              PDC Leave Management System
+            </h1>
+            <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">
+              Employees — as of fiscal year starting{" "}
+              {fyStart.toLocaleDateString("en-CA", {
+                year: "numeric",
+                month: "long",
+                day: "numeric",
+              })}
+            </p>
+          </div>
+          <form action={signOut} className="flex items-center gap-3">
+            {user?.email ? (
+              <span className="text-xs text-zinc-600 dark:text-zinc-400">
+                {user.email}
+              </span>
+            ) : null}
+            <button
+              type="submit"
+              className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-xs font-medium text-zinc-700 shadow-sm hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:bg-zinc-800"
+            >
+              Sign out
+            </button>
+          </form>
         </header>
 
         {error ? (
