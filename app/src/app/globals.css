@@ -3,6 +3,12 @@
 :root {
   --background: #ffffff;
   --foreground: #171717;
+  /* Opt into both color schemes so native form controls (date pickers,
+     scrollbars, select dropdowns) render in dark mode when the user's OS
+     is in dark mode. Without this, <input type="date"> renders the
+     browser calendar-picker indicator dark-on-dark and the icon
+     effectively disappears on our dark theme. */
+  color-scheme: light dark;
 }
 
 @theme inline {
