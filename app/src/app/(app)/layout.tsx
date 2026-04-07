@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { createClient } from "@/lib/supabase/server";
+import { getCurrentEmployee } from "@/lib/auth";
 import { signOut } from "../auth/actions";
 import { NavLink } from "./nav-link";
 
@@ -9,25 +9,14 @@ export default async function AppLayout({
 }: {
   children: React.ReactNode;
 }) {
-  const supabase = await createClient();
+  const me = await getCurrentEmployee();
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  if (!user) {
+  if (!me) {
+    // Middleware should already redirect, but belt-and-suspenders.
     redirect("/login");
   }
 
-  const { data: me } = await supabase
-    .from("employees")
-    .select("first_name, last_name, job_title")
-    .eq("auth_user_id", user.id)
-    .maybeSingle();
-
-  const displayName = me
-    ? `${me.first_name} ${me.last_name}`
-    : (user.email ?? "Unknown");
+  const displayName = `${me.firstName} ${me.lastName}`;
 
   return (
     <div className="min-h-screen bg-zinc-50 dark:bg-zinc-950">
@@ -68,7 +57,7 @@ export default async function AppLayout({
                 {displayName}
               </div>
               <div className="text-zinc-500 dark:text-zinc-400">
-                {me?.job_title ?? user.email}
+                {me.jobTitle ?? me.email}
               </div>
             </div>
             <form action={signOut}>

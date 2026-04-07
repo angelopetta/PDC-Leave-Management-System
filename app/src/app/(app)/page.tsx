@@ -1,11 +1,32 @@
+import { createClient } from "@/lib/supabase/server";
+import { getCurrentEmployee, isApprover } from "@/lib/auth";
 import { Card, StubBanner } from "./ui";
 import {
   DASHBOARD_METRICS,
-  DASHBOARD_USAGE,
   LEAVE_TYPES,
+  type LeaveTypeCode,
 } from "@/lib/sample-data";
 
 export const dynamic = "force-dynamic";
+
+const FISCAL_YEAR = 2026;
+
+const MY_BALANCE_ORDER: LeaveTypeCode[] = [
+  "vacation",
+  "sick",
+  "bereavement",
+  "cultural",
+  "personal",
+];
+
+type EntitlementRow = {
+  employee_id: string;
+  granted: number;
+  used: number;
+  pending: number;
+  remaining: number;
+  leave_types: { code: string; name: string } | null;
+};
 
 function MetricCard({
   label,
@@ -47,16 +68,68 @@ function MetricCard({
   );
 }
 
-export default function DashboardPage() {
+export default async function DashboardPage() {
+  const supabase = await createClient();
+  const me = await getCurrentEmployee();
+  const approver = isApprover(me ? { jobTitle: me.jobTitle } : null);
+
+  // RLS will return only the current employee's rows for non-approvers,
+  // and every active employee's rows for approvers — same query in both
+  // cases.
+  const { data: entitlementsData } = await supabase
+    .from("entitlements")
+    .select(
+      "employee_id, granted, used, pending, remaining, leave_types(code, name)",
+    )
+    .eq("fiscal_year", FISCAL_YEAR);
+
+  const entitlements = (entitlementsData ?? []) as unknown as EntitlementRow[];
+
+  // My balances — just the current employee's rows, keyed by leave type.
+  const myBalances = new Map<
+    LeaveTypeCode,
+    { granted: number; used: number; remaining: number }
+  >();
+  if (me) {
+    for (const e of entitlements) {
+      if (e.employee_id !== me.id) continue;
+      const code = e.leave_types?.code as LeaveTypeCode | undefined;
+      if (!code) continue;
+      myBalances.set(code, {
+        granted: Number(e.granted),
+        used: Number(e.used),
+        remaining: Number(e.remaining),
+      });
+    }
+  }
+
+  // Org-wide usage by leave type (approver view only).
+  const orgUsage = new Map<
+    LeaveTypeCode,
+    { used: number; granted: number }
+  >();
+  if (approver) {
+    for (const e of entitlements) {
+      const code = e.leave_types?.code as LeaveTypeCode | undefined;
+      if (!code) continue;
+      const prev = orgUsage.get(code) ?? { used: 0, granted: 0 };
+      orgUsage.set(code, {
+        used: prev.used + Number(e.used),
+        granted: prev.granted + Number(e.granted),
+      });
+    }
+  }
+
   return (
     <>
+      {/* Metric cards — still sample data, Phase 4 will wire these to real
+          aggregations from leave_requests. */}
       <StubBanner>
-        Numbers are hardcoded sample data matching the client prototype. Real
-        queries against <code className="font-mono">leave_requests</code> and{" "}
-        <code className="font-mono">entitlements</code> land in a later PR.
+        Metric cards below are sample data. Real Pending / Approved /
+        Denied / Total Days Off counts land in Phase 4 once the leave
+        request flow is in.
       </StubBanner>
 
-      {/* Metric cards */}
       <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <MetricCard
           label="Pending Requests"
@@ -143,39 +216,111 @@ export default function DashboardPage() {
         />
       </div>
 
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-        <Card title="Leave Usage by Type (All Staff)">
-          <div className="space-y-4">
-            {DASHBOARD_USAGE.map((row) => {
-              const meta = LEAVE_TYPES.find((t) => t.code === row.type)!;
-              const pct = row.total > 0 ? (row.used / row.total) * 100 : 0;
-              return (
-                <div key={row.type}>
-                  <div className="mb-1.5 flex items-center justify-between text-sm">
+      {/* My Balances — REAL DATA */}
+      <Card title="My Balances">
+        {myBalances.size === 0 ? (
+          <div className="py-6 text-center text-sm text-zinc-500 dark:text-zinc-400">
+            No entitlements found for fiscal year {FISCAL_YEAR}/27. The
+            backfill migration may not have run yet.
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+            {MY_BALANCE_ORDER.map((code) => {
+              const meta = LEAVE_TYPES.find((t) => t.code === code)!;
+              const bal = myBalances.get(code);
+              if (!bal || bal.granted === 0) {
+                return (
+                  <div
+                    key={code}
+                    className="rounded-lg border border-dashed border-zinc-200 p-4 dark:border-zinc-800"
+                  >
                     <div className="flex items-center gap-2">
                       <span
                         className={`h-2 w-2 rounded-full ${meta.dot}`}
                         aria-hidden
                       />
-                      <span className="font-medium text-zinc-900 dark:text-zinc-100">
+                      <span className="text-xs font-medium uppercase tracking-wider text-zinc-500 dark:text-zinc-400">
                         {meta.name}
                       </span>
                     </div>
-                    <span className="tabular-nums text-zinc-500 dark:text-zinc-400">
-                      {row.used} / {row.total} days used
+                    <div className="mt-2 text-xs text-zinc-400 dark:text-zinc-500">
+                      Not eligible
+                    </div>
+                  </div>
+                );
+              }
+              const remaining = bal.granted - bal.used;
+              return (
+                <div
+                  key={code}
+                  className="rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900"
+                >
+                  <div className="flex items-center gap-2">
+                    <span
+                      className={`h-2 w-2 rounded-full ${meta.dot}`}
+                      aria-hidden
+                    />
+                    <span className="text-xs font-medium uppercase tracking-wider text-zinc-500 dark:text-zinc-400">
+                      {meta.name}
                     </span>
                   </div>
-                  <div className="h-2 w-full overflow-hidden rounded-full bg-zinc-100 dark:bg-zinc-800">
-                    <div
-                      className={`h-full ${meta.color}`}
-                      style={{ width: `${Math.min(100, pct)}%` }}
-                    />
+                  <div className="mt-2 flex items-baseline gap-1">
+                    <span className="text-2xl font-semibold tabular-nums text-zinc-900 dark:text-zinc-50">
+                      {remaining}
+                    </span>
+                    <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                      / {bal.granted} days
+                    </span>
+                  </div>
+                  <div className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                    {bal.used} used
                   </div>
                 </div>
               );
             })}
           </div>
-        </Card>
+        )}
+      </Card>
+
+      <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-2">
+        {/* Org-wide usage bars — approver only, REAL DATA */}
+        {approver ? (
+          <Card title="Leave Usage by Type (All Staff)">
+            <div className="space-y-4">
+              {MY_BALANCE_ORDER.map((code) => {
+                const meta = LEAVE_TYPES.find((t) => t.code === code)!;
+                const row = orgUsage.get(code);
+                const used = row?.used ?? 0;
+                const granted = row?.granted ?? 0;
+                const pct = granted > 0 ? (used / granted) * 100 : 0;
+                return (
+                  <div key={code}>
+                    <div className="mb-1.5 flex items-center justify-between text-sm">
+                      <div className="flex items-center gap-2">
+                        <span
+                          className={`h-2 w-2 rounded-full ${meta.dot}`}
+                          aria-hidden
+                        />
+                        <span className="font-medium text-zinc-900 dark:text-zinc-100">
+                          {meta.name}
+                        </span>
+                      </div>
+                      <span className="tabular-nums text-zinc-500 dark:text-zinc-400">
+                        {used} / {granted} days used
+                      </span>
+                    </div>
+                    <div className="h-2 w-full overflow-hidden rounded-full bg-zinc-100 dark:bg-zinc-800">
+                      <div
+                        className={`h-full ${meta.color}`}
+                        style={{ width: `${Math.min(100, pct)}%` }}
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </Card>
+        ) : null}
 
         <Card title="Upcoming Approved Leave (30 days)">
           <div className="py-8 text-center text-sm text-zinc-500 dark:text-zinc-400">
