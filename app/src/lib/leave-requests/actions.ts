@@ -6,11 +6,11 @@ import { getCurrentEmployee } from "@/lib/auth";
 import {
   evaluateRequest,
   type PolicyContext,
-} from "../../../../../policy/engine";
+} from "../../../../policy/engine";
 import type {
   LeaveTypeCode,
   EmploymentType,
-} from "../../../../../policy/rules";
+} from "../../../../policy/rules";
 
 export type SubmitLeaveRequestInput = {
   leaveType: LeaveTypeCode;
