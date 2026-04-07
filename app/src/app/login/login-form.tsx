@@ -1,10 +1,16 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 
+type Mode = "password" | "magic-link";
+
 export function LoginForm({ next }: { next?: string }) {
+  const router = useRouter();
+  const [mode, setMode] = useState<Mode>("password");
   const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [status, setStatus] = useState<"idle" | "sending" | "sent" | "error">(
     "idle",
   );
@@ -16,6 +22,26 @@ export function LoginForm({ next }: { next?: string }) {
     setMessage(null);
 
     const supabase = createClient();
+
+    if (mode === "password") {
+      const { error } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      });
+
+      if (error) {
+        setStatus("error");
+        setMessage(error.message);
+        return;
+      }
+
+      // Session cookie is now set — navigate to the intended destination.
+      router.push(next && next.startsWith("/") ? next : "/");
+      router.refresh();
+      return;
+    }
+
+    // magic-link mode
     const origin = window.location.origin;
     const redirectTo = `${origin}/auth/callback${
       next ? `?next=${encodeURIComponent(next)}` : ""
@@ -42,6 +68,8 @@ export function LoginForm({ next }: { next?: string }) {
     );
   }
 
+  const busy = status === "sending" || status === "sent";
+
   return (
     <form onSubmit={onSubmit} className="space-y-4">
       <div>
@@ -59,21 +87,46 @@ export function LoginForm({ next }: { next?: string }) {
           value={email}
           onChange={(e) => setEmail(e.target.value)}
           placeholder="name@ki.example"
-          disabled={status === "sending" || status === "sent"}
+          disabled={busy}
           className="mt-1 block w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 shadow-sm focus:border-zinc-500 focus:outline-none focus:ring-1 focus:ring-zinc-500 disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
         />
       </div>
 
+      {mode === "password" ? (
+        <div>
+          <label
+            htmlFor="password"
+            className="block text-xs font-medium uppercase tracking-wider text-zinc-600 dark:text-zinc-400"
+          >
+            Password
+          </label>
+          <input
+            id="password"
+            type="password"
+            required
+            autoComplete="current-password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            disabled={busy}
+            className="mt-1 block w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 shadow-sm focus:border-zinc-500 focus:outline-none focus:ring-1 focus:ring-zinc-500 disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+          />
+        </div>
+      ) : null}
+
       <button
         type="submit"
-        disabled={status === "sending" || status === "sent"}
+        disabled={busy}
         className="w-full rounded-md bg-zinc-900 px-3 py-2 text-sm font-medium text-white shadow-sm hover:bg-zinc-800 disabled:opacity-60 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-white"
       >
         {status === "sending"
-          ? "Sending…"
+          ? mode === "password"
+            ? "Signing in…"
+            : "Sending…"
           : status === "sent"
             ? "Link sent"
-            : "Send magic link"}
+            : mode === "password"
+              ? "Sign in"
+              : "Send magic link"}
       </button>
 
       {message ? (
@@ -85,6 +138,30 @@ export function LoginForm({ next }: { next?: string }) {
           }`}
         >
           {message}
+        </p>
+      ) : null}
+
+      <div className="border-t border-zinc-200 pt-4 text-center dark:border-zinc-800">
+        <button
+          type="button"
+          onClick={() => {
+            setMode(mode === "password" ? "magic-link" : "password");
+            setStatus("idle");
+            setMessage(null);
+          }}
+          disabled={busy}
+          className="text-xs text-zinc-600 underline hover:text-zinc-900 disabled:opacity-60 dark:text-zinc-400 dark:hover:text-zinc-100"
+        >
+          {mode === "password"
+            ? "Or send me a magic link instead"
+            : "Or sign in with a password instead"}
+        </button>
+      </div>
+
+      {mode === "password" ? (
+        <p className="text-center text-xs text-zinc-500 dark:text-zinc-500">
+          Forgot your password? Ask an admin to reset it from the Supabase
+          dashboard.
         </p>
       ) : null}
     </form>
