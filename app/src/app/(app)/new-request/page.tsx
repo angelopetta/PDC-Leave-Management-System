@@ -1,21 +1,23 @@
+import Link from "next/link";
 import { PageHeader, Card, StubBanner } from "../ui";
+import { LEAVE_TYPES } from "@/lib/sample-data";
 
 export const dynamic = "force-dynamic";
 
-const LEAVE_TYPES = [
-  { code: "vacation", name: "Vacation" },
-  { code: "sick", name: "Sick" },
-  { code: "bereavement", name: "Bereavement" },
-  { code: "cultural", name: "Cultural" },
-  { code: "personal", name: "Personal" },
-];
-
-export default function RequestLeavePage() {
+export default function NewRequestPage() {
   return (
     <>
       <PageHeader
-        title="Request leave"
+        title="New Leave Request"
         description="Submit a new leave request. In-policy requests are auto-approved."
+        action={
+          <Link
+            href="/"
+            className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-xs font-medium text-zinc-700 shadow-sm hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:bg-zinc-800"
+          >
+            Cancel
+          </Link>
+        }
       />
 
       <StubBanner>
@@ -86,7 +88,8 @@ export default function RequestLeavePage() {
                 htmlFor="reason"
                 className="block text-xs font-medium uppercase tracking-wider text-zinc-600 dark:text-zinc-400"
               >
-                Reason <span className="normal-case text-zinc-400">(optional)</span>
+                Reason{" "}
+                <span className="normal-case text-zinc-400">(optional)</span>
               </label>
               <textarea
                 id="reason"
@@ -99,13 +102,12 @@ export default function RequestLeavePage() {
             </div>
 
             <div className="flex justify-end gap-2">
-              <button
-                type="button"
-                disabled
-                className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-xs font-medium text-zinc-700 shadow-sm disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200"
+              <Link
+                href="/"
+                className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-xs font-medium text-zinc-700 shadow-sm hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:bg-zinc-800"
               >
                 Cancel
-              </button>
+              </Link>
               <button
                 type="submit"
                 disabled
