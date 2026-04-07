@@ -506,4 +506,194 @@ A.13 Political Leave (Policy 5.13)
 
 14. Run a two-week pilot with the CEO as the only approver and a handful of test employees before full rollout.
 
+Appendix B. AI-Assisted Features (Proposed)
+
+**Status:** Proposed for v1.1 / v2, not part of v1 scope. This appendix is an addition to the original PRD to document the AI-assisted features that will be explored once the deterministic core of v1 is in production.
+
+B.1 Guiding Principles
+
+The KI leave system is already policy-driven: deterministic rules in `policy/rules.ts` and in the Supabase Edge Functions handle the vast majority of decisions without any AI involvement. The purpose of the AI-assisted features described in this appendix is *not* to replace that deterministic engine. It is to help humans --- primarily the CEO as approver --- in the narrow set of cases where the rules alone cannot produce an obviously correct answer.
+
+The following principles govern every AI feature in this appendix:
+
+-   **Advisory, never autonomous on judgment calls.** Claude recommends; a human decides. The system never auto-denies a request on the basis of an AI recommendation. Auto-approvals remain the exclusive domain of the deterministic policy engine (PRD §7, auto-approval rule).
+
+-   **Explainable by construction.** Every AI recommendation must include a plain-English rationale that cites specific clauses of the KI Employee Leaves policy. No black-box decisions.
+
+-   **Audited end-to-end.** Every prompt sent to Claude and every response received is stored in the existing `audit_log` table, linked to the request or decision it informed. Seven-year retention applies (PRD §8).
+
+-   **Server-side only.** All calls to the Claude API are made from Supabase Edge Functions, never from the browser. The API key is stored as a Supabase secret and is never exposed to clients.
+
+-   **Privacy-respecting.** Prompts include only the minimum information needed: request metadata, relevant balances, the specific KI policy clauses under consideration, and (where relevant) the free-text reason the employee provided. No health details, no social-insurance numbers, no information beyond what already exists in the `leave_requests` table.
+
+-   **Cost-bounded.** A monthly ceiling on Claude API spend is configured in the Edge Function. When the ceiling is hit, AI features degrade gracefully: the UI hides AI panels and the app continues to work exactly as it would without them.
+
+-   **Opt-outable.** HR can disable any AI feature globally from a settings page without a code change. This is important for regulatory/audit scenarios and for the two-week pilot.
+
+B.2 Feature Tier 1 --- Highest Value
+
+These are the AI features proposed for v1.1, the first release after the deterministic v1 ships.
+
+B.2.1 Conflict Resolution Advisor
+
+**Problem.** Two or more employees in the same department (or holding the same critical role) request overlapping leave that would leave the team below minimum coverage. The deterministic policy engine can detect the conflict (PRD §7, coverage/conflict detection) but cannot fairly choose which request to recommend approving.
+
+**Feature.** When the approver opens a request that is part of a multi-request conflict, an "AI analysis" panel appears alongside the request. Claude analyzes all overlapping requests and produces a ranked recommendation:
+
+1.  Rank 1 (recommended to approve): {employee} --- {reason}
+2.  Rank 2 (recommended to defer): {employee} --- {reason}
+3.  Rank 3 (recommended to deny): {employee} --- {reason}
+
+The ranking considers, in roughly this order of weight:
+
+-   **Leave type priority.** Bereavement > Compassionate Care > Cultural > Vacation > Personal. Rooted in KI policy clauses.
+
+-   **Submission order.** First-come fairness baseline.
+
+-   **Year-to-date equity.** Employees who have had fewer approvals this fiscal year are favored to correct imbalances.
+
+-   **External constraints surfaced in the reason text.** Phrases like "non-refundable booking," "wedding," "pre-scheduled medical appointment" are weighted higher than requests with vague or absent reasons.
+
+-   **Seniority.** Tiebreaker only. Never a primary factor --- explicit design choice to avoid entrenching hierarchy in leave fairness.
+
+The panel also produces a draft explanation the approver can send to the employee whose request is recommended for denial, citing the policy clause and the reason for the tiebreak.
+
+**Critical design choice.** The approver sees the recommendation but makes the actual decision. The approve/deny buttons remain the final word. The recommendation and the approver's eventual decision are both logged, which creates a feedback trail for future fairness audits.
+
+**Model.** Claude Sonnet (latest) for reasoning quality on this class of decision.
+
+B.2.2 Denial Explanation Drafter
+
+**Problem.** PRD §1.1 identifies inconsistent policy citations in denials as a root cause of employee complaints. Writing a polite, policy-cited denial takes time and the CEO may skip it under pressure.
+
+**Feature.** When the approver clicks Deny on a request, a modal opens with:
+
+-   A pre-filled plain-English explanation drafted by Claude.
+
+-   Citation of the specific KI policy clause(s) the denial is based on.
+
+-   A tone tuned to the leave type (warmer for bereavement, factual for vacation, firm but empathetic for repeated personal requests).
+
+-   An editable text area --- the approver can accept, edit, or replace the draft entirely.
+
+The draft is generated in under 2 seconds. Clicking Deny without editing still works; the draft is a suggestion.
+
+**Model.** Claude Haiku (latest) --- low latency, low cost, sufficient for structured drafting.
+
+B.2.3 Policy Q&A Chatbot for Employees
+
+**Problem.** Employees repeatedly ask HR the same policy questions ("Can I take cultural leave while probationary?" "Do holidays count against vacation?"). Currently these questions go to email and receive inconsistent answers depending on who replies.
+
+**Feature.** A floating "Ask about leave policy" widget available on every page. Employees type a natural-language question and receive an answer that:
+
+-   Cites the specific clause of the KI Employee Leaves policy (Sections 5.1--5.13) that governs the answer.
+
+-   Refuses to speculate on situations the policy does not cover --- instead routes the employee to HR with a suggested question.
+
+-   Never gives advice on individual edge cases that require CEO judgment. When the question is borderline, the response ends with "This is a judgment call --- please submit a request or email {HR contact} directly."
+
+**Scope control.** The entire KI Employee Leaves policy (~5 pages) fits inside a single Claude prompt. No RAG, no vector database, no embeddings. The policy is injected into the system prompt on every call. When the policy changes, updating a single TypeScript file in `policy/rules.ts` propagates instantly.
+
+**Model.** Claude Haiku (latest). High-volume, low-cost, low-latency.
+
+B.3 Feature Tier 2 --- High Value, Deferred
+
+These features are proposed for v2 or later, after Tier 1 has been evaluated in production.
+
+B.3.1 Anomaly Detection for HR
+
+Weekly digest emailed to HR flagging unusual patterns that may warrant a human check-in:
+
+-   Employees with unusually high sick leave usage relative to their historical baseline.
+
+-   Departments or individuals who have not booked vacation by a policy-defined cutoff (vacation forfeit risk; no carryover per KI policy).
+
+-   Employees approaching balance exhaustion for any leave type.
+
+-   Requests that were auto-approved but are retrospectively worth a human review (e.g. unusual combinations of leave types in a short window).
+
+The digest is generated by Claude Sonnet summarizing the prior week's `leave_requests` and `entitlements` data. HR can click any flag to see the underlying data and contact the employee if appropriate. No automatic action is taken on flags.
+
+B.3.2 Natural-Language Request Entry
+
+Employees type a plain-English sentence like "I need next Monday and Tuesday off to visit my mother" and Claude extracts:
+
+-   Leave type (Personal, in the example)
+
+-   Start and end dates
+
+-   Reason text for the approver
+
+The employee reviews the extracted values in a confirmation dialog and clicks Submit. If Claude cannot confidently extract any field, the dialog falls back to the regular form with the recognized fields pre-filled.
+
+**UX value.** Especially high for employees who find forms intimidating. Offered as an alternative entry point, not a replacement for the form.
+
+B.3.3 Tone-Aware Notifications
+
+When the system sends a notification (approval, denial, reminder), Claude rewrites the boilerplate in a tone appropriate to context:
+
+-   Bereavement approvals: warm, concise, no boilerplate.
+
+-   Vacation approvals: friendly and practical.
+
+-   Denials: factual, citing policy, offering a path forward.
+
+-   Balance-low warnings: proactive and non-alarming.
+
+The rewritten text is shown to the approver for a single-click confirmation before sending, or can be enabled to send automatically once HR has observed the output quality for a pilot period.
+
+B.4 Feature Tier 3 --- Interesting but Speculative
+
+Documented for completeness. Not currently recommended for implementation without further validation.
+
+-   **Year-end narrative report.** Auto-generated annual summary for the CEO covering leave usage patterns, equity statistics, and policy-change suggestions.
+
+-   **"Explain this policy" tooltips.** Any policy reference in the UI is clickable and expands into a plain-English explanation of the clause.
+
+-   **Smart reminder timing.** Claude chooses when to send upcoming-leave reminders based on past employee behavior (e.g. some people want a 1-week heads-up, others want 1-day).
+
+B.5 Features Explicitly Out of Scope
+
+The following are documented as **not** to be built, for the reasons given:
+
+-   **Autonomous AI approval or denial of judgment-call requests.** Creates accountability gaps and liability exposure. All judgment calls remain with a human approver.
+
+-   **Sentiment analysis on free-text reasons.** Surveillance-adjacent; inappropriate for an HR tool at a small workplace.
+
+-   **Predictive coverage forecasting beyond simple conflict detection.** With ~20 employees, the dataset is too small to produce reliable predictions, and false positives would undermine trust in the advisor features that do work.
+
+-   **Voice or SMS-based request submission.** Covered by the PRD's existing "out of scope" list; not reopened here.
+
+-   **Exporting leave data to external LLM APIs other than Anthropic's Claude.** Kept narrow to simplify the privacy review and security audit.
+
+B.6 Architecture Notes
+
+-   **Integration point:** Supabase Edge Functions call the Claude API using the official Anthropic SDK. Functions are invoked from the Next.js app via `supabase.functions.invoke()`.
+
+-   **Model selection:** Claude Haiku (latest) for high-volume, low-stakes features (Q&A chatbot, denial drafter, notification rewrites). Claude Sonnet (latest) for reasoning-heavy features (conflict advisor, anomaly detection digest).
+
+-   **Prompt management:** Every prompt template lives in source control under `supabase/functions/{feature}/prompts.ts`. Version-controlled, reviewable, and unit-testable.
+
+-   **Evaluation:** Each Tier 1 feature ships with a fixed set of golden test cases that run in CI. A change to any prompt template that breaks a golden case blocks the PR.
+
+-   **Cost estimate for KI (~20 employees):** All Tier 1 features combined are projected to cost under CAD $15/month at typical usage, scaling roughly linearly with headcount and request volume.
+
+-   **Kill switch:** A single feature flag in the Edge Function config (`AI_FEATURES_ENABLED`) disables every AI-assisted feature in the app. When flipped off, the UI falls back to the deterministic-only experience with no functional regressions.
+
+B.7 Rollout Plan
+
+1.  **Ship v1 without any AI features.** The deterministic core must work, be audited, and be trusted before AI advisors are layered on.
+
+2.  **Add B.2.3 (Policy Q&A chatbot) first.** Lowest-risk, highest-visibility win for employees. No approval flow involvement, no decision-making.
+
+3.  **Add B.2.2 (Denial Explanation Drafter) second.** Still advisory, human always in the loop, but visible to the approver as a quality-of-life improvement.
+
+4.  **Add B.2.1 (Conflict Resolution Advisor) third, with a pilot period.** Highest-value feature but also the most sensitive, since it touches fairness across employees. Pilot with the CEO for a full fiscal quarter before enabling it for all overlap conflicts.
+
+5.  **Evaluate Tier 2 features** based on feedback from Tier 1 rollout. Add only what clearly earns its keep.
+
+6.  **Revisit Tier 3** at the annual PRD review.
+
+*--- End of Appendix B ---*
+
 *--- End of Document ---*
