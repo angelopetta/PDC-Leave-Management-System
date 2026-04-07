@@ -82,12 +82,15 @@ export default async function RequestsPage({
 
   // RLS does the employee-vs-approver split for us: approvers see every
   // request, non-approvers see only their own.
+  // `leave_requests` has two FKs to `employees` (employee_id for the
+  // requester, reviewed_by for the approver), so PostgREST needs the
+  // `!employee_id` hint to know which relationship to embed.
   const { data, error } = await supabase
     .from("leave_requests")
     .select(
       `
         id, start_date, end_date, days, reason, status, submitted_at, reviewed_at,
-        employees(first_name, last_name, department),
+        employees!employee_id(first_name, last_name, department),
         leave_types(code)
       `,
     )
