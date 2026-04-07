@@ -7,6 +7,8 @@ import { NewRequestForm, type MyBalances } from "./new-request-form";
 export const dynamic = "force-dynamic";
 
 const FISCAL_YEAR = 2026;
+const FISCAL_YEAR_START = `${FISCAL_YEAR}-04-01`;
+const FISCAL_YEAR_END = `${FISCAL_YEAR + 1}-03-31`;
 
 type EntitlementRow = {
   granted: number;
@@ -19,14 +21,21 @@ export default async function NewRequestPage() {
   const me = await getCurrentEmployee();
   const supabase = await createClient();
 
-  const { data: rows } = await supabase
-    .from("entitlements")
-    .select("granted, used, pending, leave_types(code)")
-    .eq("employee_id", me?.id ?? "")
-    .eq("fiscal_year", FISCAL_YEAR);
+  const [entitlementsRes, holidaysRes] = await Promise.all([
+    supabase
+      .from("entitlements")
+      .select("granted, used, pending, leave_types(code)")
+      .eq("employee_id", me?.id ?? "")
+      .eq("fiscal_year", FISCAL_YEAR),
+    supabase
+      .from("holidays")
+      .select("date")
+      .gte("date", FISCAL_YEAR_START)
+      .lte("date", FISCAL_YEAR_END),
+  ]);
 
   const balances: MyBalances = {};
-  for (const r of (rows ?? []) as unknown as EntitlementRow[]) {
+  for (const r of (entitlementsRes.data ?? []) as unknown as EntitlementRow[]) {
     const code = r.leave_types?.code;
     if (!code) continue;
     balances[code as keyof MyBalances] = {
@@ -35,6 +44,10 @@ export default async function NewRequestPage() {
       pending: Number(r.pending),
     };
   }
+
+  const holidays = ((holidaysRes.data ?? []) as { date: string }[]).map(
+    (h) => h.date,
+  );
 
   return (
     <>
@@ -53,7 +66,7 @@ export default async function NewRequestPage() {
 
       <div className="max-w-xl">
         <Card>
-          <NewRequestForm balances={balances} />
+          <NewRequestForm balances={balances} holidays={holidays} />
         </Card>
       </div>
     </>

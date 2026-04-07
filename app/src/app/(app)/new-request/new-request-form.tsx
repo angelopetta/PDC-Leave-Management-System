@@ -27,7 +27,47 @@ export type MyBalances = Partial<
   Record<LeaveTypeCode, { granted: number; used: number; pending: number }>
 >;
 
-export function NewRequestForm({ balances }: { balances: MyBalances }) {
+// Inlined copy of the business-day counter from policy/engine.ts. Kept
+// local to avoid a cross-root import in a client bundle; the server
+// action still runs the canonical engine check on submit, so this
+// function is purely for the live UX preview.
+function businessDaysInRange(
+  startIso: string,
+  endIso: string,
+  holidays: Set<string>,
+): number {
+  if (!startIso || !endIso) return 0;
+  const start = new Date(startIso + "T00:00:00Z");
+  const end = new Date(endIso + "T00:00:00Z");
+  if (isNaN(start.getTime()) || isNaN(end.getTime())) return 0;
+  if (end < start) return 0;
+  let count = 0;
+  const cur = new Date(start);
+  while (cur <= end) {
+    const dow = cur.getUTCDay();
+    const iso = cur.toISOString().slice(0, 10);
+    if (dow !== 0 && dow !== 6 && !holidays.has(iso)) count += 1;
+    cur.setUTCDate(cur.getUTCDate() + 1);
+  }
+  return count;
+}
+
+function remainingFor(
+  balances: MyBalances,
+  code: LeaveTypeCode,
+): number | null {
+  const b = balances[code];
+  if (!b) return null;
+  return Math.max(0, b.granted - b.used - b.pending);
+}
+
+export function NewRequestForm({
+  balances,
+  holidays,
+}: {
+  balances: MyBalances;
+  holidays: string[];
+}) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [result, setResult] = useState<SubmitLeaveRequestResult | null>(null);
@@ -37,13 +77,18 @@ export function NewRequestForm({ balances }: { balances: MyBalances }) {
   const [endDate, setEndDate] = useState("");
   const [reason, setReason] = useState("");
 
-  const remaining = useMemo(() => {
-    const b = balances[leaveType];
-    if (!b) return null;
-    return Math.max(0, b.granted - b.used - b.pending);
-  }, [balances, leaveType]);
+  const holidaySet = useMemo(() => new Set(holidays), [holidays]);
 
+  const remaining = remainingFor(balances, leaveType);
   const granted = balances[leaveType]?.granted ?? 0;
+
+  const requestedDays = useMemo(
+    () => businessDaysInRange(startDate, endDate, holidaySet),
+    [startDate, endDate, holidaySet],
+  );
+
+  const overBalance =
+    requestedDays > 0 && remaining !== null && requestedDays > remaining;
 
   function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -82,11 +127,22 @@ export function NewRequestForm({ balances }: { balances: MyBalances }) {
           disabled={disabled}
           className="mt-1 block w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 shadow-sm disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
         >
-          {LEAVE_TYPE_OPTIONS.map((t) => (
-            <option key={t.code} value={t.code}>
-              {t.name}
-            </option>
-          ))}
+          {LEAVE_TYPE_OPTIONS.map((t) => {
+            const rem = remainingFor(balances, t.code);
+            const g = balances[t.code]?.granted ?? 0;
+            const suffix =
+              rem === null
+                ? " — not eligible"
+                : g === 0
+                  ? " — not eligible"
+                  : ` — ${rem} of ${g} remaining`;
+            return (
+              <option key={t.code} value={t.code}>
+                {t.name}
+                {suffix}
+              </option>
+            );
+          })}
         </select>
         <div className="mt-1.5 text-xs text-zinc-500 dark:text-zinc-400">
           {remaining === null ? (
@@ -142,6 +198,43 @@ export function NewRequestForm({ balances }: { balances: MyBalances }) {
           />
         </div>
       </div>
+
+      {startDate && endDate ? (
+        <div
+          className={
+            overBalance
+              ? "rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200"
+              : "rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs text-zinc-700 dark:border-zinc-800 dark:bg-zinc-950/50 dark:text-zinc-300"
+          }
+        >
+          {requestedDays === 0 ? (
+            <>
+              Selected range contains no business days (weekends and
+              holidays are excluded).
+            </>
+          ) : (
+            <>
+              This request is{" "}
+              <span className="font-semibold">
+                {requestedDays} business day{requestedDays === 1 ? "" : "s"}
+              </span>
+              .{" "}
+              {overBalance && remaining !== null ? (
+                <>
+                  You only have{" "}
+                  <span className="font-semibold">{remaining}</span>{" "}
+                  remaining — submitting will be blocked.
+                </>
+              ) : remaining !== null ? (
+                <>
+                  {Math.max(0, remaining - requestedDays)} would remain after
+                  approval.
+                </>
+              ) : null}
+            </>
+          )}
+        </div>
+      ) : null}
 
       <div>
         <label
@@ -205,7 +298,7 @@ export function NewRequestForm({ balances }: { balances: MyBalances }) {
         </Link>
         <button
           type="submit"
-          disabled={disabled}
+          disabled={disabled || overBalance}
           className="rounded-md bg-zinc-900 px-3 py-2 text-xs font-medium text-white shadow-sm hover:bg-zinc-800 disabled:opacity-60 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-white"
         >
           {isPending ? "Submitting…" : "Submit request"}
