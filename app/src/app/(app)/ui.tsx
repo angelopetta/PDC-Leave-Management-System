@@ -30,16 +30,21 @@ export function Card({
   title,
   children,
   footer,
+  action,
 }: {
   title?: string;
   children: ReactNode;
   footer?: ReactNode;
+  action?: ReactNode;
 }) {
   return (
     <div className="overflow-hidden rounded-lg border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
       {title ? (
-        <div className="border-b border-zinc-200 px-5 py-3 text-xs font-medium uppercase tracking-wider text-zinc-600 dark:border-zinc-800 dark:text-zinc-400">
-          {title}
+        <div className="flex items-center justify-between border-b border-zinc-200 px-5 py-4 dark:border-zinc-800">
+          <h2 className="text-sm font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
+            {title}
+          </h2>
+          {action}
         </div>
       ) : null}
       <div className="p-5">{children}</div>
@@ -57,6 +62,41 @@ export function StubBanner({ children }: { children: ReactNode }) {
     <div className="mb-6 rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
       <span className="font-semibold">Placeholder screen — </span>
       {children}
+    </div>
+  );
+}
+
+export function StatusBadge({
+  status,
+}: {
+  status: "pending" | "approved" | "denied";
+}) {
+  const styles = {
+    pending:
+      "border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200",
+    approved:
+      "border-emerald-300 bg-emerald-50 text-emerald-900 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-200",
+    denied:
+      "border-red-300 bg-red-50 text-red-900 dark:border-red-900 dark:bg-red-950 dark:text-red-200",
+  };
+  const labels = {
+    pending: "Pending",
+    approved: "Approved",
+    denied: "Denied",
+  };
+  return (
+    <span
+      className={`inline-flex rounded-md border px-2 py-0.5 text-xs font-medium ${styles[status]}`}
+    >
+      {labels[status]}
+    </span>
+  );
+}
+
+export function Avatar({ initials }: { initials: string }) {
+  return (
+    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-zinc-200 text-xs font-semibold text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
+      {initials}
     </div>
   );
 }
