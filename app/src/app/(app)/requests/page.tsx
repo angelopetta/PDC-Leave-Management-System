@@ -1,46 +1,131 @@
 import Link from "next/link";
+import { createClient } from "@/lib/supabase/server";
+import { getCurrentEmployee, isApprover } from "@/lib/auth";
 import { Card, StubBanner, StatusBadge, Avatar } from "../ui";
-import { SAMPLE_REQUESTS, LEAVE_TYPES, type RequestStatus } from "@/lib/sample-data";
+import { LEAVE_TYPES, type LeaveTypeCode } from "@/lib/sample-data";
 
 export const dynamic = "force-dynamic";
 
-const FILTERS: { key: "all" | RequestStatus; label: string }[] = [
+type FilterKey = "all" | "pending" | "approved" | "denied";
+
+const FILTERS: { key: FilterKey; label: string }[] = [
   { key: "all", label: "All" },
   { key: "pending", label: "Pending" },
   { key: "approved", label: "Approved" },
   { key: "denied", label: "Denied" },
 ];
 
+type LeaveRequestRow = {
+  id: string;
+  start_date: string;
+  end_date: string;
+  days: number;
+  reason: string | null;
+  status: "draft" | "submitted" | "approved" | "denied" | "cancelled";
+  submitted_at: string | null;
+  reviewed_at: string | null;
+  employees: {
+    first_name: string;
+    last_name: string;
+    department: string | null;
+  } | null;
+  leave_types: { code: string } | null;
+};
+
+function initials(first: string, last: string): string {
+  return `${first.charAt(0)}${last.charAt(0)}`.toUpperCase();
+}
+
+function formatRange(start: string, end: string): string {
+  const startD = new Date(start + "T00:00:00Z");
+  const endD = new Date(end + "T00:00:00Z");
+  const sameDay = start === end;
+  const sameMonth =
+    startD.getUTCFullYear() === endD.getUTCFullYear() &&
+    startD.getUTCMonth() === endD.getUTCMonth();
+  const short: Intl.DateTimeFormatOptions = {
+    month: "short",
+    day: "numeric",
+    timeZone: "UTC",
+  };
+  if (sameDay) return startD.toLocaleDateString("en-US", short);
+  if (sameMonth) {
+    return `${startD.toLocaleDateString("en-US", short)} – ${endD.getUTCDate()}`;
+  }
+  return `${startD.toLocaleDateString("en-US", short)} – ${endD.toLocaleDateString("en-US", short)}`;
+}
+
+// Map our internal leave_request_status enum (which has 'submitted') onto
+// the three UI buckets (Pending / Approved / Denied). 'draft' and
+// 'cancelled' are hidden from this view entirely.
+function toDisplayStatus(
+  s: LeaveRequestRow["status"],
+): "pending" | "approved" | "denied" | null {
+  if (s === "submitted") return "pending";
+  if (s === "approved") return "approved";
+  if (s === "denied") return "denied";
+  return null;
+}
+
 export default async function RequestsPage({
   searchParams,
 }: {
   searchParams: Promise<{ filter?: string }>;
 }) {
-  const { filter = "all" } = await searchParams;
+  const { filter: filterParam = "all" } = await searchParams;
+  const filter: FilterKey = (FILTERS.find((f) => f.key === filterParam)?.key ??
+    "all") as FilterKey;
 
+  const supabase = await createClient();
+  const me = await getCurrentEmployee();
+  const approver = isApprover(me ? { jobTitle: me.jobTitle } : null);
+
+  // RLS does the employee-vs-approver split for us: approvers see every
+  // request, non-approvers see only their own.
+  const { data, error } = await supabase
+    .from("leave_requests")
+    .select(
+      `
+        id, start_date, end_date, days, reason, status, submitted_at, reviewed_at,
+        employees(first_name, last_name, department),
+        leave_types(code)
+      `,
+    )
+    .in("status", ["submitted", "approved", "denied"])
+    .order("submitted_at", { ascending: false });
+
+  const rows = (data ?? []) as unknown as LeaveRequestRow[];
+
+  // Compute counts across all visible rows (not filtered).
   const counts = {
-    all: SAMPLE_REQUESTS.length,
-    pending: SAMPLE_REQUESTS.filter((r) => r.status === "pending").length,
-    approved: SAMPLE_REQUESTS.filter((r) => r.status === "approved").length,
-    denied: SAMPLE_REQUESTS.filter((r) => r.status === "denied").length,
+    all: rows.length,
+    pending: rows.filter((r) => r.status === "submitted").length,
+    approved: rows.filter((r) => r.status === "approved").length,
+    denied: rows.filter((r) => r.status === "denied").length,
   };
 
-  const rows =
+  const visible =
     filter === "all"
-      ? SAMPLE_REQUESTS
-      : SAMPLE_REQUESTS.filter((r) => r.status === filter);
+      ? rows
+      : rows.filter((r) => toDisplayStatus(r.status) === filter);
 
   return (
     <>
-      <StubBanner>
-        Requests are hardcoded sample data matching the client prototype.
-        Approve and Deny buttons don&apos;t do anything yet. The approver
-        view is shown for everyone at this stage; employee view (own
-        requests only) will filter via RLS once real data lands.
-      </StubBanner>
+      {!approver ? (
+        <StubBanner>
+          You&apos;re viewing your own requests only. Approvers see every
+          employee&apos;s request.
+        </StubBanner>
+      ) : null}
+
+      {error ? (
+        <div className="mb-4 rounded-md border border-red-300 bg-red-50 p-3 text-sm text-red-900 dark:border-red-900 dark:bg-red-950 dark:text-red-200">
+          Failed to load requests: {error.message}
+        </div>
+      ) : null}
 
       <Card
-        title="All Leave Requests"
+        title={approver ? "All Leave Requests" : "My Leave Requests"}
         action={
           <div className="flex items-center gap-1">
             {FILTERS.map((f) => {
@@ -80,72 +165,81 @@ export default async function RequestsPage({
               </tr>
             </thead>
             <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
-              {rows.length === 0 ? (
+              {visible.length === 0 ? (
                 <tr>
                   <td
                     colSpan={7}
                     className="py-8 text-center text-sm text-zinc-500 dark:text-zinc-400"
                   >
-                    No requests match this filter.
+                    No requests to show.{" "}
+                    <Link
+                      href="/new-request"
+                      className="underline hover:text-zinc-700 dark:hover:text-zinc-300"
+                    >
+                      Submit one
+                    </Link>
+                    .
                   </td>
                 </tr>
               ) : (
-                rows.map((r) => {
-                  const meta = LEAVE_TYPES.find((t) => t.code === r.type)!;
+                visible.map((r) => {
+                  const code = (r.leave_types?.code ?? "") as LeaveTypeCode;
+                  const meta = LEAVE_TYPES.find((t) => t.code === code);
+                  const displayStatus = toDisplayStatus(r.status) ?? "pending";
+                  const first = r.employees?.first_name ?? "—";
+                  const last = r.employees?.last_name ?? "";
                   return (
-                    <tr key={r.id} className="text-zinc-900 dark:text-zinc-100">
+                    <tr
+                      key={r.id}
+                      className="text-zinc-900 dark:text-zinc-100"
+                    >
                       <td className="py-3 pr-4">
                         <div className="flex items-center gap-3">
-                          <Avatar initials={r.employeeInitials} />
+                          <Avatar initials={initials(first, last)} />
                           <div className="leading-tight">
-                            <div className="font-medium">{r.employeeName}</div>
+                            <div className="font-medium">
+                              {first} {last}
+                            </div>
                             <div className="text-xs text-zinc-500 dark:text-zinc-400">
-                              {r.employeeDept}
+                              {r.employees?.department ?? "—"}
                             </div>
                           </div>
                         </div>
                       </td>
                       <td className="py-3 pr-4">
                         <div className="flex items-center gap-2 text-sm">
-                          <span
-                            className={`h-2 w-2 rounded-full ${meta.dot}`}
-                            aria-hidden
-                          />
-                          {meta.name}
+                          {meta ? (
+                            <>
+                              <span
+                                className={`h-2 w-2 rounded-full ${meta.dot}`}
+                                aria-hidden
+                              />
+                              {meta.name}
+                            </>
+                          ) : (
+                            code
+                          )}
                         </div>
                       </td>
                       <td className="py-3 pr-4 text-sm text-zinc-600 dark:text-zinc-400">
-                        {r.startDate === r.endDate
-                          ? r.startDate
-                          : `${r.startDate} – ${r.endDate}`}
+                        {formatRange(r.start_date, r.end_date)}
                       </td>
-                      <td className="py-3 pr-4 tabular-nums">{r.days}</td>
+                      <td className="py-3 pr-4 tabular-nums">
+                        {Number(r.days)}
+                      </td>
                       <td className="py-3 pr-4 text-sm text-zinc-600 dark:text-zinc-400">
-                        {r.reason}
+                        {r.reason ?? "—"}
                       </td>
                       <td className="py-3 pr-4">
-                        <StatusBadge status={r.status} />
+                        <StatusBadge status={displayStatus} />
                       </td>
-                      <td className="py-3 text-right">
-                        {r.status === "pending" ? (
-                          <div className="inline-flex gap-2">
-                            <button
-                              type="button"
-                              className="rounded-md border border-emerald-300 bg-white px-2.5 py-1 text-xs font-medium text-emerald-700 hover:bg-emerald-50 dark:border-emerald-800 dark:bg-zinc-900 dark:text-emerald-300 dark:hover:bg-emerald-950"
-                            >
-                              Approve
-                            </button>
-                            <button
-                              type="button"
-                              className="rounded-md border border-red-300 bg-white px-2.5 py-1 text-xs font-medium text-red-700 hover:bg-red-50 dark:border-red-800 dark:bg-zinc-900 dark:text-red-300 dark:hover:bg-red-950"
-                            >
-                              Deny
-                            </button>
-                          </div>
+                      <td className="py-3 text-right text-xs text-zinc-500 dark:text-zinc-500">
+                        {r.status === "submitted" && approver ? (
+                          <span className="italic">Approve/deny in Phase 3</span>
+                        ) : r.reviewed_at ? (
+                          `Reviewed ${r.reviewed_at.slice(0, 10)}`
                         ) : (
-                          <span className="text-xs text-zinc-500 dark:text-zinc-500">
-                            Reviewed {r.reviewedOn}
-                          </span>
+                          "—"
                         )}
                       </td>
                     </tr>

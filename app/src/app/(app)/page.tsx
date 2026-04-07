@@ -1,15 +1,14 @@
+import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
 import { getCurrentEmployee, isApprover } from "@/lib/auth";
-import { Card, StubBanner } from "./ui";
-import {
-  DASHBOARD_METRICS,
-  LEAVE_TYPES,
-  type LeaveTypeCode,
-} from "@/lib/sample-data";
+import { Card, StatusBadge } from "./ui";
+import { LEAVE_TYPES, type LeaveTypeCode } from "@/lib/sample-data";
 
 export const dynamic = "force-dynamic";
 
 const FISCAL_YEAR = 2026;
+const FISCAL_YEAR_START = `${FISCAL_YEAR}-04-01`;
+const FISCAL_YEAR_END = `${FISCAL_YEAR + 1}-03-31`;
 
 const MY_BALANCE_ORDER: LeaveTypeCode[] = [
   "vacation",
@@ -26,6 +25,17 @@ type EntitlementRow = {
   pending: number;
   remaining: number;
   leave_types: { code: string; name: string } | null;
+};
+
+type LeaveRequestRow = {
+  id: string;
+  start_date: string;
+  end_date: string;
+  days: number;
+  status: "draft" | "submitted" | "approved" | "denied" | "cancelled";
+  submitted_at: string | null;
+  employee_id: string;
+  leave_types: { code: string } | null;
 };
 
 function MetricCard({
@@ -68,24 +78,73 @@ function MetricCard({
   );
 }
 
+function formatRange(start: string, end: string): string {
+  const startD = new Date(start + "T00:00:00Z");
+  const endD = new Date(end + "T00:00:00Z");
+  const short: Intl.DateTimeFormatOptions = {
+    month: "short",
+    day: "numeric",
+    timeZone: "UTC",
+  };
+  if (start === end) return startD.toLocaleDateString("en-US", short);
+  const sameMonth =
+    startD.getUTCFullYear() === endD.getUTCFullYear() &&
+    startD.getUTCMonth() === endD.getUTCMonth();
+  if (sameMonth) {
+    return `${startD.toLocaleDateString("en-US", short)} – ${endD.getUTCDate()}`;
+  }
+  return `${startD.toLocaleDateString("en-US", short)} – ${endD.toLocaleDateString("en-US", short)}`;
+}
+
 export default async function DashboardPage() {
   const supabase = await createClient();
   const me = await getCurrentEmployee();
   const approver = isApprover(me ? { jobTitle: me.jobTitle } : null);
 
-  // RLS will return only the current employee's rows for non-approvers,
-  // and every active employee's rows for approvers — same query in both
-  // cases.
-  const { data: entitlementsData } = await supabase
-    .from("entitlements")
-    .select(
-      "employee_id, granted, used, pending, remaining, leave_types(code, name)",
-    )
-    .eq("fiscal_year", FISCAL_YEAR);
+  // Parallel-fetch everything the dashboard needs. RLS handles visibility.
+  const [entitlementsRes, requestsRes, myRequestsRes] = await Promise.all([
+    supabase
+      .from("entitlements")
+      .select(
+        "employee_id, granted, used, pending, remaining, leave_types(code, name)",
+      )
+      .eq("fiscal_year", FISCAL_YEAR),
+    supabase
+      .from("leave_requests")
+      .select("id, status, days, start_date")
+      .gte("start_date", FISCAL_YEAR_START)
+      .lte("start_date", FISCAL_YEAR_END)
+      .in("status", ["submitted", "approved", "denied"]),
+    me
+      ? supabase
+          .from("leave_requests")
+          .select(
+            "id, start_date, end_date, days, status, submitted_at, employee_id, leave_types(code)",
+          )
+          .eq("employee_id", me.id)
+          .in("status", ["submitted", "approved", "denied"])
+          .order("submitted_at", { ascending: false })
+          .limit(5)
+      : Promise.resolve({ data: [], error: null }),
+  ]);
 
-  const entitlements = (entitlementsData ?? []) as unknown as EntitlementRow[];
+  const entitlements = (entitlementsRes.data ?? []) as unknown as EntitlementRow[];
+  const allRequests = (requestsRes.data ?? []) as unknown as {
+    status: string;
+    days: number;
+  }[];
+  const myRecent = (myRequestsRes.data ?? []) as unknown as LeaveRequestRow[];
 
-  // My balances — just the current employee's rows, keyed by leave type.
+  // Metric cards — counts scoped to the rows the caller can see via RLS.
+  // For approvers: org-wide. For employees: their own.
+  const pendingCount = allRequests.filter((r) => r.status === "submitted").length;
+  const approvedCount = allRequests.filter((r) => r.status === "approved").length;
+  const deniedCount = allRequests.filter((r) => r.status === "denied").length;
+  const totalDaysOff = allRequests
+    .filter((r) => r.status === "approved")
+    .reduce((sum, r) => sum + Number(r.days), 0);
+
+  // My balances
   const myBalances = new Map<
     LeaveTypeCode,
     { granted: number; used: number; remaining: number }
@@ -103,7 +162,7 @@ export default async function DashboardPage() {
     }
   }
 
-  // Org-wide usage by leave type (approver view only).
+  // Org-wide usage (approver only)
   const orgUsage = new Map<
     LeaveTypeCode,
     { used: number; granted: number }
@@ -122,18 +181,11 @@ export default async function DashboardPage() {
 
   return (
     <>
-      {/* Metric cards — still sample data, Phase 4 will wire these to real
-          aggregations from leave_requests. */}
-      <StubBanner>
-        Metric cards below are sample data. Real Pending / Approved /
-        Denied / Total Days Off counts land in Phase 4 once the leave
-        request flow is in.
-      </StubBanner>
-
+      {/* Metric cards — scoped by RLS to what the caller can see */}
       <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <MetricCard
           label="Pending Requests"
-          value={DASHBOARD_METRICS.pending}
+          value={pendingCount}
           tone="amber"
           icon={
             <svg
@@ -152,8 +204,8 @@ export default async function DashboardPage() {
           }
         />
         <MetricCard
-          label="Approved (YTD)"
-          value={DASHBOARD_METRICS.approvedYtd}
+          label={`Approved (FY ${FISCAL_YEAR}/${String(FISCAL_YEAR + 1).slice(-2)})`}
+          value={approvedCount}
           tone="emerald"
           icon={
             <svg
@@ -172,8 +224,8 @@ export default async function DashboardPage() {
           }
         />
         <MetricCard
-          label="Denied (YTD)"
-          value={DASHBOARD_METRICS.deniedYtd}
+          label={`Denied (FY ${FISCAL_YEAR}/${String(FISCAL_YEAR + 1).slice(-2)})`}
+          value={deniedCount}
           tone="red"
           icon={
             <svg
@@ -193,8 +245,8 @@ export default async function DashboardPage() {
           }
         />
         <MetricCard
-          label="Total Days Off"
-          value={DASHBOARD_METRICS.totalDaysOff}
+          label="Total Days Off (approved)"
+          value={totalDaysOff}
           tone="blue"
           icon={
             <svg
@@ -216,12 +268,21 @@ export default async function DashboardPage() {
         />
       </div>
 
-      {/* My Balances — REAL DATA */}
-      <Card title="My Balances">
+      {/* My Balances */}
+      <Card
+        title="My Balances"
+        action={
+          <Link
+            href="/new-request"
+            className="rounded-md bg-zinc-900 px-3 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-white"
+          >
+            Request leave
+          </Link>
+        }
+      >
         {myBalances.size === 0 ? (
           <div className="py-6 text-center text-sm text-zinc-500 dark:text-zinc-400">
-            No entitlements found for fiscal year {FISCAL_YEAR}/27. The
-            backfill migration may not have run yet.
+            No entitlements found for fiscal year {FISCAL_YEAR}/{String(FISCAL_YEAR + 1).slice(-2)}.
           </div>
         ) : (
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
@@ -283,7 +344,7 @@ export default async function DashboardPage() {
       </Card>
 
       <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-2">
-        {/* Org-wide usage bars — approver only, REAL DATA */}
+        {/* Org-wide usage — approver only */}
         {approver ? (
           <Card title="Leave Usage by Type (All Staff)">
             <div className="space-y-4">
@@ -322,10 +383,66 @@ export default async function DashboardPage() {
           </Card>
         ) : null}
 
-        <Card title="Upcoming Approved Leave (30 days)">
-          <div className="py-8 text-center text-sm text-zinc-500 dark:text-zinc-400">
-            No upcoming approved leave in the next 30 days.
-          </div>
+        <Card
+          title="My Recent Requests"
+          action={
+            <Link
+              href="/requests"
+              className="text-xs font-medium text-zinc-600 underline hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
+            >
+              View all
+            </Link>
+          }
+        >
+          {myRecent.length === 0 ? (
+            <div className="py-6 text-center text-sm text-zinc-500 dark:text-zinc-400">
+              You haven&apos;t submitted any requests yet.{" "}
+              <Link
+                href="/new-request"
+                className="underline hover:text-zinc-700 dark:hover:text-zinc-300"
+              >
+                Submit one
+              </Link>
+              .
+            </div>
+          ) : (
+            <ul className="divide-y divide-zinc-200 dark:divide-zinc-800">
+              {myRecent.map((r) => {
+                const code = (r.leave_types?.code ?? "") as LeaveTypeCode;
+                const meta = LEAVE_TYPES.find((t) => t.code === code);
+                const displayStatus =
+                  r.status === "submitted"
+                    ? "pending"
+                    : (r.status as "approved" | "denied");
+                return (
+                  <li
+                    key={r.id}
+                    className="flex items-center justify-between py-3 text-sm"
+                  >
+                    <div className="flex items-center gap-3">
+                      {meta ? (
+                        <span
+                          className={`h-2 w-2 rounded-full ${meta.dot}`}
+                          aria-hidden
+                        />
+                      ) : null}
+                      <div className="leading-tight">
+                        <div className="font-medium text-zinc-900 dark:text-zinc-100">
+                          {meta?.name ?? code}
+                        </div>
+                        <div className="text-xs text-zinc-500 dark:text-zinc-400">
+                          {formatRange(r.start_date, r.end_date)} ·{" "}
+                          {Number(r.days)} day
+                          {Number(r.days) === 1 ? "" : "s"}
+                        </div>
+                      </div>
+                    </div>
+                    <StatusBadge status={displayStatus} />
+                  </li>
+                );
+              })}
+            </ul>
+          )}
         </Card>
       </div>
     </>
