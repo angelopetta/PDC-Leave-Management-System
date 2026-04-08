@@ -1,15 +1,59 @@
 import Link from "next/link";
-import { PageHeader, Card, StubBanner } from "../ui";
-import { LEAVE_TYPES } from "@/lib/sample-data";
+import { createClient } from "@/lib/supabase/server";
+import { getCurrentEmployee } from "@/lib/auth";
+import { PageHeader, Card } from "../ui";
+import { NewRequestForm, type MyBalances } from "./new-request-form";
 
 export const dynamic = "force-dynamic";
 
-export default function NewRequestPage() {
+const FISCAL_YEAR = 2026;
+const FISCAL_YEAR_START = `${FISCAL_YEAR}-04-01`;
+const FISCAL_YEAR_END = `${FISCAL_YEAR + 1}-03-31`;
+
+type EntitlementRow = {
+  granted: number;
+  used: number;
+  pending: number;
+  leave_types: { code: string } | null;
+};
+
+export default async function NewRequestPage() {
+  const me = await getCurrentEmployee();
+  const supabase = await createClient();
+
+  const [entitlementsRes, holidaysRes] = await Promise.all([
+    supabase
+      .from("entitlements")
+      .select("granted, used, pending, leave_types(code)")
+      .eq("employee_id", me?.id ?? "")
+      .eq("fiscal_year", FISCAL_YEAR),
+    supabase
+      .from("holidays")
+      .select("date")
+      .gte("date", FISCAL_YEAR_START)
+      .lte("date", FISCAL_YEAR_END),
+  ]);
+
+  const balances: MyBalances = {};
+  for (const r of (entitlementsRes.data ?? []) as unknown as EntitlementRow[]) {
+    const code = r.leave_types?.code;
+    if (!code) continue;
+    balances[code as keyof MyBalances] = {
+      granted: Number(r.granted),
+      used: Number(r.used),
+      pending: Number(r.pending),
+    };
+  }
+
+  const holidays = ((holidaysRes.data ?? []) as { date: string }[]).map(
+    (h) => h.date,
+  );
+
   return (
     <>
       <PageHeader
         title="New Leave Request"
-        description="Submit a new leave request. In-policy requests are auto-approved."
+        description="Submit a new leave request. In-policy requests auto-approve immediately; judgment calls route to the approver inbox."
         action={
           <Link
             href="/"
@@ -20,103 +64,9 @@ export default function NewRequestPage() {
         }
       />
 
-      <StubBanner>
-        This form doesn&apos;t save anything yet. Submit is disabled until the
-        policy engine and <code className="font-mono">leave_requests</code>{" "}
-        server action are wired up.
-      </StubBanner>
-
       <div className="max-w-xl">
         <Card>
-          <form className="space-y-5">
-            <div>
-              <label
-                htmlFor="leave-type"
-                className="block text-xs font-medium uppercase tracking-wider text-zinc-600 dark:text-zinc-400"
-              >
-                Leave type
-              </label>
-              <select
-                id="leave-type"
-                name="leave_type"
-                disabled
-                className="mt-1 block w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 shadow-sm disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
-              >
-                {LEAVE_TYPES.map((t) => (
-                  <option key={t.code} value={t.code}>
-                    {t.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label
-                  htmlFor="start-date"
-                  className="block text-xs font-medium uppercase tracking-wider text-zinc-600 dark:text-zinc-400"
-                >
-                  Start date
-                </label>
-                <input
-                  id="start-date"
-                  name="start_date"
-                  type="date"
-                  disabled
-                  className="mt-1 block w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 shadow-sm disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
-                />
-              </div>
-              <div>
-                <label
-                  htmlFor="end-date"
-                  className="block text-xs font-medium uppercase tracking-wider text-zinc-600 dark:text-zinc-400"
-                >
-                  End date
-                </label>
-                <input
-                  id="end-date"
-                  name="end_date"
-                  type="date"
-                  disabled
-                  className="mt-1 block w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 shadow-sm disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
-                />
-              </div>
-            </div>
-
-            <div>
-              <label
-                htmlFor="reason"
-                className="block text-xs font-medium uppercase tracking-wider text-zinc-600 dark:text-zinc-400"
-              >
-                Reason{" "}
-                <span className="normal-case text-zinc-400">(optional)</span>
-              </label>
-              <textarea
-                id="reason"
-                name="reason"
-                rows={3}
-                disabled
-                placeholder="Add any context the approver should know"
-                className="mt-1 block w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 shadow-sm disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
-              />
-            </div>
-
-            <div className="flex justify-end gap-2">
-              <Link
-                href="/"
-                className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-xs font-medium text-zinc-700 shadow-sm hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:bg-zinc-800"
-              >
-                Cancel
-              </Link>
-              <button
-                type="submit"
-                disabled
-                className="rounded-md bg-zinc-900 px-3 py-2 text-xs font-medium text-white shadow-sm disabled:opacity-60 dark:bg-zinc-100 dark:text-zinc-900"
-              >
-                Submit request
-              </button>
-            </div>
-          </form>
+          <NewRequestForm balances={balances} holidays={holidays} />
         </Card>
       </div>
     </>
