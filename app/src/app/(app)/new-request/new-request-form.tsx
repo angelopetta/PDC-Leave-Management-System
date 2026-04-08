@@ -1,10 +1,12 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { useEffect, useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import {
+  previewLeaveRequest,
   submitLeaveRequest,
+  type LeaveRequestPreview,
   type SubmitLeaveRequestResult,
 } from "@/lib/leave-requests/actions";
 
@@ -76,6 +78,7 @@ export function NewRequestForm({
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [reason, setReason] = useState("");
+  const [preview, setPreview] = useState<LeaveRequestPreview | null>(null);
 
   const holidaySet = useMemo(() => new Set(holidays), [holidays]);
 
@@ -89,6 +92,35 @@ export function NewRequestForm({
 
   const overBalance =
     requestedDays > 0 && remaining !== null && requestedDays > remaining;
+
+  // Live server-side preview: re-runs the policy engine (with blackouts
+  // and department coverage) whenever leave type or dates change. The
+  // local day-count above stays as the instant fast path; the preview
+  // adds the routing-relevant info that needs the database.
+  //
+  // We derive `previewActive` rather than clearing state in the effect
+  // (which trips react-hooks/set-state-in-effect). When previewActive is
+  // false the rendering simply ignores any stale state below.
+  const previewActive =
+    Boolean(startDate) && Boolean(endDate) && requestedDays > 0 && !overBalance;
+
+  useEffect(() => {
+    if (!previewActive) return;
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      const r = await previewLeaveRequest({
+        leaveType,
+        startDate,
+        endDate,
+        reason: "",
+      });
+      if (!cancelled) setPreview(r);
+    }, 250);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [leaveType, startDate, endDate, previewActive]);
 
   function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -109,6 +141,11 @@ export function NewRequestForm({
   }
 
   const disabled = isPending || (result?.ok ?? false);
+  const previewBlocked =
+    previewActive &&
+    preview !== null &&
+    preview.ok &&
+    preview.blockingCheck !== null;
 
   return (
     <form onSubmit={onSubmit} className="space-y-5">
@@ -236,6 +273,46 @@ export function NewRequestForm({
         </div>
       ) : null}
 
+      {/* Live preview from the policy engine: blackouts, coverage, and
+          routing. Only shown when the date range is valid and within
+          balance — otherwise the cards above already explain the issue. */}
+      {previewActive && preview && preview.ok ? (
+        <>
+          {preview.blockingCheck ? (
+            <div className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-xs text-red-900 dark:border-red-900 dark:bg-red-950 dark:text-red-200">
+              <div className="font-medium">{preview.blockingCheck.message}</div>
+              <div className="mt-0.5 text-[11px] text-red-800/80 dark:text-red-200/70">
+                {preview.blockingCheck.clause}
+              </div>
+            </div>
+          ) : preview.flags.length > 0 ? (
+            <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
+              <div className="font-medium">
+                Heads up — your request will need approver review instead of
+                auto-approving:
+              </div>
+              <ul className="mt-1 list-disc space-y-0.5 pl-5">
+                {preview.flags.map((f) => (
+                  <li key={f.id}>{f.message}</li>
+                ))}
+              </ul>
+            </div>
+          ) : preview.recommendation === "auto_approve" ? (
+            <div className="rounded-md border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs text-emerald-900 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-200">
+              {preview.mode === "shadow" ? (
+                <>
+                  In policy. While we&apos;re in shadow mode this still goes
+                  to the CEO for sign-off, but it&apos;ll be flagged as a
+                  recommended approval.
+                </>
+              ) : (
+                <>In policy — this will auto-approve on submit.</>
+              )}
+            </div>
+          ) : null}
+        </>
+      ) : null}
+
       <div>
         <label
           htmlFor="reason"
@@ -298,7 +375,7 @@ export function NewRequestForm({
         </Link>
         <button
           type="submit"
-          disabled={disabled || overBalance}
+          disabled={disabled || overBalance || previewBlocked}
           className="rounded-md bg-zinc-900 px-3 py-2 text-xs font-medium text-white shadow-sm hover:bg-zinc-800 disabled:opacity-60 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-white"
         >
           {isPending ? "Submitting…" : "Submit request"}
