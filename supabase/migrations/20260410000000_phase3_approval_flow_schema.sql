@@ -61,7 +61,7 @@ create policy "app_settings: read" on app_settings
 -- ---------------------------------------------------------------------------
 
 create table departments (
-  id            uuid primary key default uuid_generate_v4(),
+  id            uuid primary key default gen_random_uuid(),
   name          text not null unique,
   min_coverage  integer not null default 1 check (min_coverage >= 0),
   created_at    timestamptz not null default now(),
