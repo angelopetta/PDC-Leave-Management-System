@@ -195,6 +195,14 @@ Grouped by priority so you can decide what belongs in v1 versus later.
 
 -   **Auto-approval for in-policy requests.** If within balance, past the notice period, and no conflict --- approve automatically and notify the CEO as FYI.
 
+    *Rollout modes (Phase 3).* HR can pick the auto-approval posture without a code change by flipping `app_settings.auto_approval_mode`:
+
+    -   `shadow` *(default)* --- the policy engine recommends approvals but every request still goes to the approver inbox. The inbox shows a green "Recommended: Approve" badge on requests that would have auto-approved, with a one-click "Approve as recommended" button. Lets HR build trust before flipping the switch; no employee-visible behaviour change.
+    -   `auto_with_fyi` --- in-policy requests are auto-approved on submit and the CEO receives an FYI notification.
+    -   `auto_silent` --- in-policy requests auto-approve silently. Used only after HR is fully comfortable with the engine output.
+
+    The engine writes its verdict to `leave_requests.recommendation` (`auto_approve` | `review`) at submit time regardless of mode, so the divergence between recommendation and final decision is auditable.
+
 -   **Holiday-aware day counting.** Honours the 11 KI-observed holidays so counts match what finance expects. Per policy, holidays falling during vacation are not counted against the employee.
 
 -   **Years-of-service tracking.** System automatically bumps vacation entitlement on each work anniversary per the tiered schedule.
@@ -207,6 +215,13 @@ Grouped by priority so you can decide what belongs in v1 versus later.
 
 -   **Coverage / conflict detection.** Warn when approving would leave a team under minimum coverage.
 
+    *Implementation (Phase 3).* Each row in the `departments` table carries a `min_coverage` integer (the minimum number of department members who must remain on the job at all times). The policy engine computes the peak number of concurrent overlapping approved-or-pending requests in the requester's department for any weekday in the requested range; if approving the new request would push that peak above `headcount - min_coverage`, the request is **flagged** (not blocked) and routes to manual review. Sick leave is exempt --- people don't pre-plan illness, and KI policy doesn't gate sick leave on coverage.
+
+    Warnings surface in two places:
+
+    -   On the New Request form, as a live preview ("Heads up: 3 of 5 Finance staff would be off that week. Your request will need CEO review instead of auto-approving."). The user can still submit; routing changes only.
+    -   In the approver inbox, where each pending request expands to show a conflict view: every overlapping approved/pending request in the same department, plus a coverage line ("Finance: peak 3 of 5 off concurrently --- below min 2").
+
 -   **Audit log.** Immutable record of every action, essential for defending policy-driven decisions.
 
 -   **Calendar subscription (ICS).** So approved leave flows into Outlook/Google Calendar automatically.
@@ -218,6 +233,13 @@ Grouped by priority so you can decide what belongs in v1 versus later.
 -   **Half-day and partial-day requests.** Common for medical appointments.
 
 -   **Blackout periods.** HR can mark periods where vacation cannot be requested (audit week, community events).
+
+    *Implementation (Phase 3).* `blackout_periods.applies_to` distinguishes two scopes:
+
+    -   `all` --- organization-wide. The policy engine treats overlap with an org-wide blackout as a **hard block**: the request can't be submitted and the form surfaces the blackout reason.
+    -   `department:<Name>` --- soft scope. Overlap with the requester's department blackout is **flagged**, allowing submission but routing the request to the approver inbox so the CEO can weigh the reason.
+
+    A starter `KI Annual Audit Week` blackout (`2027-03-08 → 2027-03-12`, scope `all`) is seeded by migration `20260410000000_phase3_approval_flow_schema.sql` so the engine check has something to fire against during smoke testing. HR will manage future blackouts from the v1.1 settings UI.
 
 -   **Year-end rollover automation.** On March 31 → April 1, balances reset per policy (no carryover for vacation, sick, cultural, or educational).
 

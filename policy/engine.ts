@@ -44,11 +44,67 @@ export type PolicyCheck = {
   message?: string;
 };
 
+/**
+ * A blackout window passed into the engine. The DB stores `applies_to`
+ * as 'all' or 'department:Finance'; the engine only cares about the
+ * scope ('all' = org-wide block, 'department' = soft flag for matching
+ * department).
+ */
+export type BlackoutPeriod = {
+  id?: string;
+  startDate: string; // ISO yyyy-mm-dd
+  endDate: string; // ISO yyyy-mm-dd
+  scope: "all" | "department";
+  /** Raw applies_to string for messaging ('all' or 'department:Finance'). */
+  appliesTo: string;
+  reason: string | null;
+};
+
+/**
+ * Context for the department coverage check. The caller supplies the
+ * department's headcount and minimum-coverage threshold along with all
+ * currently-overlapping approved/submitted requests in the same
+ * department, EXCLUDING the request being evaluated (so the engine can
+ * compute "what if I added this one?").
+ */
+export type DepartmentCoverageContext = {
+  departmentId: string;
+  departmentName: string;
+  /** Active employees in the department, including the requester. */
+  headcount: number;
+  /** Minimum number of people who must remain on the job at all times. */
+  minCoverage: number;
+  /**
+   * Other peoples' leave that overlaps any day in the request's range.
+   * Excludes the current request and any of the requester's own previous
+   * rows for the same range.
+   */
+  overlapping: Array<{
+    requestId: string;
+    employeeId: string;
+    employeeName: string;
+    startDate: string; // ISO yyyy-mm-dd
+    endDate: string; // ISO yyyy-mm-dd
+    status: "submitted" | "approved";
+  }>;
+};
+
+/**
+ * Three modes for the auto-approval rollout (see PRD §5.1):
+ *
+ *   shadow         — engine recommends, request still goes to inbox.
+ *                    The default until HR is comfortable.
+ *   auto_with_fyi  — in-policy requests auto-approve; CEO gets an FYI.
+ *   auto_silent    — in-policy requests auto-approve silently.
+ */
+export type AutoApprovalMode = "shadow" | "auto_with_fyi" | "auto_silent";
+
 export type PolicyContext = {
   employee: {
     id: string;
     hireDate: string; // ISO yyyy-mm-dd
     employmentType: EmploymentType;
+    departmentName: string | null;
   };
   leaveType: LeaveTypeCode;
   startDate: string; // ISO yyyy-mm-dd
@@ -64,6 +120,15 @@ export type PolicyContext = {
   holidays: Set<string>;
   /** Reference "today" for notice-period math. ISO yyyy-mm-dd. */
   today: string;
+  /** Active blackout windows that could overlap the request. */
+  blackouts: BlackoutPeriod[];
+  /**
+   * Coverage data for the requester's department. Optional because
+   * employees with no department on file can't be coverage-checked.
+   */
+  departmentCoverage?: DepartmentCoverageContext;
+  /** Current rollout mode from app_settings. Affects autoApprove only. */
+  autoApprovalMode: AutoApprovalMode;
 };
 
 export type PolicyDecision = {
@@ -71,7 +136,17 @@ export type PolicyDecision = {
   days: number;
   /** True if any block-severity check failed. */
   blocked: boolean;
-  /** True if all checks passed (including flags). */
+  /**
+   * What the engine recommends regardless of mode. 'auto_approve' iff no
+   * block AND no flag fired. Stored on the request row so the inbox can
+   * show "Recommended: Approve" badges in shadow mode.
+   */
+  recommendation: "auto_approve" | "review";
+  /**
+   * Final actual auto-approve decision. Equal to recommendation ===
+   * 'auto_approve' UNLESS mode is 'shadow', in which case this is always
+   * false (everything goes to inbox in shadow mode).
+   */
   autoApprove: boolean;
   checks: PolicyCheck[];
   blockingCheck?: PolicyCheck;
@@ -133,6 +208,46 @@ export function businessDaysInRange(
 // Engine
 // ---------------------------------------------------------------------------
 
+/** True if [aStart,aEnd] and [bStart,bEnd] share at least one day. */
+function rangesOverlap(
+  aStart: string,
+  aEnd: string,
+  bStart: string,
+  bEnd: string,
+): boolean {
+  return toDate(aStart) <= toDate(bEnd) && toDate(bStart) <= toDate(aEnd);
+}
+
+/**
+ * Returns the maximum number of distinct overlapping people on any
+ * single weekday in [startIso, endIso], counting from the supplied
+ * `overlapping` list. Used by the department coverage check to compute
+ * worst-case staffing during the requested window.
+ */
+function peakOverlapOnAnyDay(
+  startIso: string,
+  endIso: string,
+  overlapping: DepartmentCoverageContext["overlapping"],
+): number {
+  let peak = 0;
+  const start = toDate(startIso);
+  const end = toDate(endIso);
+  const cur = new Date(start);
+  while (cur <= end) {
+    const dow = cur.getUTCDay();
+    if (dow !== 0 && dow !== 6) {
+      const iso = toIso(cur);
+      let count = 0;
+      for (const o of overlapping) {
+        if (iso >= o.startDate && iso <= o.endDate) count += 1;
+      }
+      if (count > peak) peak = count;
+    }
+    cur.setUTCDate(cur.getUTCDate() + 1);
+  }
+  return peak;
+}
+
 export function evaluateRequest(ctx: PolicyContext): PolicyDecision {
   // Date sanity first — everything else assumes a valid range.
   if (toDate(ctx.endDate) < toDate(ctx.startDate)) {
@@ -146,6 +261,7 @@ export function evaluateRequest(ctx: PolicyContext): PolicyDecision {
     return {
       days: 0,
       blocked: true,
+      recommendation: "review",
       autoApprove: false,
       checks: [c],
       blockingCheck: c,
@@ -166,6 +282,7 @@ export function evaluateRequest(ctx: PolicyContext): PolicyDecision {
     return {
       days: 0,
       blocked: true,
+      recommendation: "review",
       autoApprove: false,
       checks: [c],
       blockingCheck: c,
@@ -306,13 +423,90 @@ export function evaluateRequest(ctx: PolicyContext): PolicyDecision {
   // No additional hard gates beyond the universal balance check. Eligibility
   // windows (spring/fall hunt) are advisory, not enforced.
 
+  // --- Blackouts ------------------------------------------------------------
+  // Org-wide blackouts are hard blocks (PRD §5.1, blackout periods).
+  // Department-scoped blackouts are flags — the request is allowed but
+  // routes for review so the approver can weigh it against the reason.
+  for (const b of ctx.blackouts) {
+    if (
+      !rangesOverlap(ctx.startDate, ctx.endDate, b.startDate, b.endDate)
+    ) {
+      continue;
+    }
+    if (b.scope === "all") {
+      checks.push({
+        id: "blackout.org_wide",
+        clause: "PRD §5.1 — Blackout periods (org-wide)",
+        severity: "block",
+        passed: false,
+        message:
+          (b.reason
+            ? `${b.reason} `
+            : "An organization-wide blackout is in effect ") +
+          `(${b.startDate} to ${b.endDate}). Please choose dates outside this window.`,
+      });
+    } else if (
+      b.scope === "department" &&
+      ctx.employee.departmentName &&
+      b.appliesTo === `department:${ctx.employee.departmentName}`
+    ) {
+      checks.push({
+        id: "blackout.department",
+        clause: "PRD §5.1 — Blackout periods (department-scoped)",
+        severity: "flag",
+        passed: false,
+        message:
+          (b.reason
+            ? `${b.reason} `
+            : `A blackout is in effect for ${ctx.employee.departmentName} `) +
+          `(${b.startDate} to ${b.endDate}). Your request will be flagged for review.`,
+      });
+    }
+  }
+
+  // --- Department coverage --------------------------------------------------
+  // Soft check: if approving this request would peak the number of
+  // department members off on any one day above (headcount - minCoverage),
+  // route it for review instead of auto-approving. Sick leave is exempt
+  // because employees can't pre-plan illness — KI policy doesn't gate
+  // sick leave on coverage. (PRD §5.1, coverage / conflict detection)
+  if (ctx.departmentCoverage && ctx.leaveType !== "sick") {
+    const cov = ctx.departmentCoverage;
+    // The +1 represents the requester themselves; `overlapping` excludes
+    // them so the engine can do the "what if" math the same way for both
+    // submission preview and inbox re-check.
+    const peakWithThis =
+      peakOverlapOnAnyDay(ctx.startDate, ctx.endDate, cov.overlapping) + 1;
+    const maxAllowedOff = cov.headcount - cov.minCoverage;
+    if (peakWithThis > maxAllowedOff) {
+      checks.push({
+        id: "coverage.department_minimum",
+        clause: "PRD §5.1 — Coverage / conflict detection",
+        severity: "flag",
+        passed: false,
+        message: `Approving would leave ${cov.departmentName} below its minimum coverage of ${cov.minCoverage} on at least one day. ${peakWithThis} of ${cov.headcount} ${cov.departmentName} staff would be off concurrently. Your request will be flagged for review.`,
+      });
+    }
+  }
+
   const blocking = checks.find((c) => !c.passed && c.severity === "block");
   const flagged = checks.some((c) => !c.passed && c.severity === "flag");
+
+  const recommendation: "auto_approve" | "review" =
+    !blocking && !flagged ? "auto_approve" : "review";
+
+  // In shadow mode, the engine still computes a recommendation but
+  // never auto-approves — every in-policy request goes to the inbox
+  // with a "Recommended: Approve" badge so HR can build trust before
+  // flipping the switch. (PRD §5.1, auto-approval rollout)
+  const autoApprove =
+    recommendation === "auto_approve" && ctx.autoApprovalMode !== "shadow";
 
   return {
     days,
     blocked: !!blocking,
-    autoApprove: !blocking && !flagged,
+    recommendation,
+    autoApprove,
     checks,
     blockingCheck: blocking,
   };
