@@ -171,70 +171,56 @@ async function buildPolicyContext(
   );
 
   // Department coverage context: only when the employee has a
-  // department on file. We pull all overlapping requests in the same
-  // department EXCLUDING the requester themselves so the engine can do
-  // "what if" math for both new submissions and inbox re-checks.
+  // department on file. We call SECURITY DEFINER helpers instead of
+  // querying the tables directly, so the results don't get poisoned
+  // by RLS when a non-approver is submitting. See migration
+  // 20260410030000_phase3_rls_coverage_helpers.sql for the rationale.
   let departmentCoverage: DepartmentCoverageContext | undefined;
   const employeeRow = employeeRes.data as
     | { id: string; department: string | null; department_id: string | null }
     | null;
 
   if (employeeRow?.department_id) {
-    const [deptRes, headcountRes, overlapRes] = await Promise.all([
-      supabase
-        .from("departments")
-        .select("id, name, min_coverage")
-        .eq("id", employeeRow.department_id)
-        .maybeSingle(),
-      supabase
-        .from("employees")
-        .select("id", { count: "exact", head: true })
-        .eq("department_id", employeeRow.department_id)
-        .eq("status", "active"),
-      supabase
-        .from("leave_requests")
-        .select(
-          `id, employee_id, start_date, end_date, status,
-           employees!employee_id(first_name, last_name, department_id)`,
-        )
-        .in("status", ["submitted", "approved"])
-        .lte("start_date", input.endDate)
-        .gte("end_date", input.startDate)
-        .neq("employee_id", me.id),
+    const [deptInfoRes, overlapRes] = await Promise.all([
+      supabase.rpc("department_info", {
+        p_department_id: employeeRow.department_id,
+      }),
+      supabase.rpc("department_overlapping_leaves", {
+        p_department_id: employeeRow.department_id,
+        p_start_date: input.startDate,
+        p_end_date: input.endDate,
+        p_exclude_employee_id: me.id,
+      }),
     ]);
 
-    if (deptRes.data) {
+    const deptInfo = (
+      Array.isArray(deptInfoRes.data) ? deptInfoRes.data[0] : deptInfoRes.data
+    ) as { name: string; headcount: number; min_coverage: number } | null;
+
+    if (deptInfo) {
       const overlapping = (
-        (overlapRes.data ?? []) as unknown as Array<{
-          id: string;
+        (overlapRes.data ?? []) as Array<{
+          request_id: string;
           employee_id: string;
+          employee_name: string;
           start_date: string;
           end_date: string;
           status: "submitted" | "approved";
-          employees: {
-            first_name: string;
-            last_name: string;
-            department_id: string | null;
-          } | null;
         }>
-      )
-        // Filter to same department in TS — Supabase nested filters are
-        // awkward and the row count is small enough that this is fine.
-        .filter((r) => r.employees?.department_id === employeeRow.department_id)
-        .map((r) => ({
-          requestId: r.id,
-          employeeId: r.employee_id,
-          employeeName: `${r.employees?.first_name ?? ""} ${r.employees?.last_name ?? ""}`.trim(),
-          startDate: r.start_date,
-          endDate: r.end_date,
-          status: r.status,
-        }));
+      ).map((r) => ({
+        requestId: r.request_id,
+        employeeId: r.employee_id,
+        employeeName: r.employee_name,
+        startDate: r.start_date,
+        endDate: r.end_date,
+        status: r.status,
+      }));
 
       departmentCoverage = {
-        departmentId: deptRes.data.id,
-        departmentName: deptRes.data.name,
-        headcount: headcountRes.count ?? 0,
-        minCoverage: deptRes.data.min_coverage,
+        departmentId: employeeRow.department_id,
+        departmentName: deptInfo.name,
+        headcount: Number(deptInfo.headcount),
+        minCoverage: Number(deptInfo.min_coverage),
         overlapping,
       };
     }
