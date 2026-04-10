@@ -101,32 +101,47 @@ export default async function DashboardPage() {
   const me = await getCurrentEmployee();
   const approver = isApprover(me ? { jobTitle: me.jobTitle } : null);
 
+  const today = new Date().toISOString().slice(0, 10);
+
   // Parallel-fetch everything the dashboard needs. RLS handles visibility.
-  const [entitlementsRes, requestsRes, myRequestsRes] = await Promise.all([
-    supabase
-      .from("entitlements")
-      .select(
-        "employee_id, granted, used, pending, remaining, leave_types(code, name)",
-      )
-      .eq("fiscal_year", FISCAL_YEAR),
-    supabase
-      .from("leave_requests")
-      .select("id, status, days, start_date")
-      .gte("start_date", FISCAL_YEAR_START)
-      .lte("start_date", FISCAL_YEAR_END)
-      .in("status", ["submitted", "approved", "denied"]),
-    me
-      ? supabase
-          .from("leave_requests")
-          .select(
-            "id, start_date, end_date, days, status, submitted_at, employee_id, leave_types(code)",
-          )
-          .eq("employee_id", me.id)
-          .in("status", ["submitted", "approved", "denied"])
-          .order("submitted_at", { ascending: false })
-          .limit(5)
-      : Promise.resolve({ data: [], error: null }),
-  ]);
+  const [entitlementsRes, requestsRes, myRequestsRes, upcomingRes] =
+    await Promise.all([
+      supabase
+        .from("entitlements")
+        .select(
+          "employee_id, granted, used, pending, remaining, leave_types(code, name)",
+        )
+        .eq("fiscal_year", FISCAL_YEAR),
+      supabase
+        .from("leave_requests")
+        .select("id, status, days, start_date")
+        .gte("start_date", FISCAL_YEAR_START)
+        .lte("start_date", FISCAL_YEAR_END)
+        .in("status", ["submitted", "approved", "denied"]),
+      me
+        ? supabase
+            .from("leave_requests")
+            .select(
+              "id, start_date, end_date, days, status, submitted_at, employee_id, leave_types(code)",
+            )
+            .eq("employee_id", me.id)
+            .in("status", ["submitted", "approved", "denied"])
+            .order("submitted_at", { ascending: false })
+            .limit(5)
+        : Promise.resolve({ data: [], error: null }),
+      // Upcoming approved leave: still ongoing or in the future.
+      supabase
+        .from("leave_requests")
+        .select(
+          `id, start_date, end_date, days,
+           employees!employee_id(first_name, last_name),
+           leave_types(code)`,
+        )
+        .eq("status", "approved")
+        .gte("end_date", today)
+        .order("start_date")
+        .limit(8),
+    ]);
 
   const entitlements = (entitlementsRes.data ?? []) as unknown as EntitlementRow[];
   const allRequests = (requestsRes.data ?? []) as unknown as {
@@ -134,6 +149,16 @@ export default async function DashboardPage() {
     days: number;
   }[];
   const myRecent = (myRequestsRes.data ?? []) as unknown as LeaveRequestRow[];
+
+  type UpcomingRow = {
+    id: string;
+    start_date: string;
+    end_date: string;
+    days: number;
+    employees: { first_name: string; last_name: string } | null;
+    leave_types: { code: string } | null;
+  };
+  const upcoming = (upcomingRes.data ?? []) as unknown as UpcomingRow[];
 
   // Metric cards — counts scoped to the rows the caller can see via RLS.
   // For approvers: org-wide. For employees: their own.
@@ -438,6 +463,62 @@ export default async function DashboardPage() {
                       </div>
                     </div>
                     <StatusBadge status={displayStatus} />
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </Card>
+
+        {/* Upcoming approved leave */}
+        <Card
+          title="Upcoming Approved Leave"
+          action={
+            <Link
+              href="/calendar"
+              className="text-xs font-medium text-zinc-600 underline hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
+            >
+              Calendar
+            </Link>
+          }
+        >
+          {upcoming.length === 0 ? (
+            <div className="py-6 text-center text-sm text-zinc-500 dark:text-zinc-400">
+              No upcoming approved leave.
+            </div>
+          ) : (
+            <ul className="divide-y divide-zinc-200 dark:divide-zinc-800">
+              {upcoming.map((u) => {
+                const code = (u.leave_types?.code ?? "") as LeaveTypeCode;
+                const meta = LEAVE_TYPES.find((t) => t.code === code);
+                const name = u.employees
+                  ? `${u.employees.first_name} ${u.employees.last_name}`
+                  : "—";
+                return (
+                  <li
+                    key={u.id}
+                    className="flex items-center justify-between py-3 text-sm"
+                  >
+                    <div className="flex items-center gap-3">
+                      {meta ? (
+                        <span
+                          className={`h-2 w-2 rounded-full ${meta.dot}`}
+                          aria-hidden
+                        />
+                      ) : null}
+                      <div className="leading-tight">
+                        <div className="font-medium text-zinc-900 dark:text-zinc-100">
+                          {name}
+                        </div>
+                        <div className="text-xs text-zinc-500 dark:text-zinc-400">
+                          {meta?.name ?? code} ·{" "}
+                          {formatRange(u.start_date, u.end_date)} ·{" "}
+                          {Number(u.days)} day
+                          {Number(u.days) === 1 ? "" : "s"}
+                        </div>
+                      </div>
+                    </div>
+                    <StatusBadge status="approved" />
                   </li>
                 );
               })}
