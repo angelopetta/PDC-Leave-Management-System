@@ -1,7 +1,9 @@
+import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
 import { getCurrentEmployee, isApprover } from "@/lib/auth";
 import { Card, Avatar, StubBanner } from "../ui";
 import { LEAVE_TYPES, type LeaveTypeCode } from "@/lib/sample-data";
+import { AdjustBalanceButton } from "./adjust-balance";
 
 export const dynamic = "force-dynamic";
 
@@ -134,7 +136,19 @@ export default async function BalancesPage() {
         </div>
       ) : null}
 
-      <Card title="Employee Leave Balances">
+      <Card
+        title="Employee Leave Balances"
+        action={
+          approver ? (
+            <Link
+              href="/backdate"
+              className="rounded-md bg-zinc-900 px-3 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-white"
+            >
+              Record Past Leave
+            </Link>
+          ) : undefined
+        }
+      >
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
@@ -182,13 +196,27 @@ export default async function BalancesPage() {
                       </td>
                       {COLUMN_ORDER.map((code) => {
                         const cell = balances[code];
+                        const meta = LEAVE_TYPES.find((t) => t.code === code);
                         return (
-                          <td key={code} className="py-3 pr-4">
+                          <td key={code} className="relative py-3 pr-4">
                             {cell ? (
-                              <BalanceCell
-                                used={cell.used}
-                                granted={cell.granted}
-                              />
+                              <div className="flex items-start gap-1">
+                                <BalanceCell
+                                  used={cell.used}
+                                  granted={cell.granted}
+                                />
+                                {approver ? (
+                                  <AdjustBalanceButton
+                                    employeeId={emp.id}
+                                    employeeName={`${emp.first_name} ${emp.last_name}`}
+                                    leaveTypeCode={code}
+                                    leaveTypeName={meta?.name ?? code}
+                                    fiscalYear={FISCAL_YEAR}
+                                    currentGranted={cell.granted}
+                                    currentUsed={cell.used}
+                                  />
+                                ) : null}
+                              </div>
                             ) : (
                               <span className="text-xs text-zinc-500 dark:text-zinc-500">
                                 —

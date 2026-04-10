@@ -496,3 +496,99 @@ export async function overrideLeaveRequest(
 
   return { ok: true, requestId, newStatus: row?.status ?? "unknown" };
 }
+
+// ---------------------------------------------------------------------------
+// adjustEntitlement — approver directly sets granted/used on an entitlement
+// ---------------------------------------------------------------------------
+
+export type AdjustEntitlementResult =
+  | { ok: true; granted: number; used: number; remaining: number }
+  | { ok: false; error: string };
+
+export async function adjustEntitlement(input: {
+  employeeId: string;
+  leaveTypeCode: string;
+  fiscalYear: number;
+  newGranted: number | null;
+  newUsed: number | null;
+  reason: string;
+}): Promise<AdjustEntitlementResult> {
+  const me = await getCurrentEmployee();
+  if (!me) return { ok: false, error: "You must be signed in." };
+
+  if (!input.reason.trim()) {
+    return { ok: false, error: "A reason is required." };
+  }
+
+  const supabase = await createClient();
+  const { data, error } = await supabase.rpc("adjust_entitlement", {
+    p_employee_id: input.employeeId,
+    p_leave_type_code: input.leaveTypeCode,
+    p_fiscal_year: input.fiscalYear,
+    p_new_granted: input.newGranted,
+    p_new_used: input.newUsed,
+    p_reason: input.reason.trim(),
+  });
+
+  if (error) {
+    return { ok: false, error: error.message };
+  }
+
+  const row = Array.isArray(data) ? data[0] : data;
+
+  revalidatePath("/");
+  revalidatePath("/balances");
+
+  return {
+    ok: true,
+    granted: Number(row?.granted ?? 0),
+    used: Number(row?.used ?? 0),
+    remaining: Number(row?.remaining ?? 0),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// backdateLeaveRequest — approver creates an already-approved past request
+// ---------------------------------------------------------------------------
+
+export type BackdateLeaveRequestResult =
+  | { ok: true; requestId: string }
+  | { ok: false; error: string };
+
+export async function backdateLeaveRequest(input: {
+  employeeId: string;
+  leaveTypeCode: string;
+  startDate: string;
+  endDate: string;
+  days: number;
+  reason: string;
+}): Promise<BackdateLeaveRequestResult> {
+  const me = await getCurrentEmployee();
+  if (!me) return { ok: false, error: "You must be signed in." };
+
+  if (!input.reason.trim()) {
+    return { ok: false, error: "A reason is required." };
+  }
+
+  const supabase = await createClient();
+  const { data, error } = await supabase.rpc("backdate_leave_request", {
+    p_employee_id: input.employeeId,
+    p_leave_type_code: input.leaveTypeCode,
+    p_start_date: input.startDate,
+    p_end_date: input.endDate,
+    p_days: input.days,
+    p_reason: input.reason.trim(),
+  });
+
+  if (error) {
+    return { ok: false, error: error.message };
+  }
+
+  const row = Array.isArray(data) ? data[0] : data;
+
+  revalidatePath("/");
+  revalidatePath("/requests");
+  revalidatePath("/balances");
+
+  return { ok: true, requestId: row?.request_id ?? "" };
+}
