@@ -60,6 +60,14 @@ export type DenyLeaveRequestResult =
   | { ok: true; requestId: string }
   | { ok: false; error: string };
 
+export type CancelLeaveRequestResult =
+  | { ok: true; requestId: string }
+  | { ok: false; error: string };
+
+export type OverrideLeaveRequestResult =
+  | { ok: true; requestId: string; newStatus: string }
+  | { ok: false; error: string };
+
 function fiscalYearForIsoDate(iso: string): number {
   const d = new Date(iso + "T00:00:00Z");
   const y = d.getUTCFullYear();
@@ -422,4 +430,69 @@ export async function denyLeaveRequest(
   revalidatePath("/balances");
 
   return { ok: true, requestId };
+}
+
+// ---------------------------------------------------------------------------
+// cancelLeaveRequest — employee cancels their own pending/approved request
+// ---------------------------------------------------------------------------
+
+export async function cancelLeaveRequest(
+  requestId: string,
+  reason: string | null,
+): Promise<CancelLeaveRequestResult> {
+  const me = await getCurrentEmployee();
+  if (!me) return { ok: false, error: "You must be signed in." };
+
+  const supabase = await createClient();
+  const { error } = await supabase.rpc("cancel_leave_request", {
+    p_request_id: requestId,
+    p_reason: reason ?? "",
+  });
+
+  if (error) {
+    return { ok: false, error: error.message };
+  }
+
+  revalidatePath("/");
+  revalidatePath("/requests");
+  revalidatePath("/balances");
+
+  return { ok: true, requestId };
+}
+
+// ---------------------------------------------------------------------------
+// overrideLeaveRequest — approver reverses a previous approval/denial
+// ---------------------------------------------------------------------------
+
+export async function overrideLeaveRequest(
+  requestId: string,
+  reviewNotes: string,
+): Promise<OverrideLeaveRequestResult> {
+  const me = await getCurrentEmployee();
+  if (!me) return { ok: false, error: "You must be signed in." };
+
+  if (!reviewNotes || !reviewNotes.trim()) {
+    return {
+      ok: false,
+      error: "A reason is required when overriding a decision.",
+    };
+  }
+
+  const supabase = await createClient();
+  const { data, error } = await supabase.rpc("override_leave_request", {
+    p_request_id: requestId,
+    p_review_notes: reviewNotes.trim(),
+  });
+
+  if (error) {
+    return { ok: false, error: error.message };
+  }
+
+  const row = Array.isArray(data) ? data[0] : data;
+
+  revalidatePath("/");
+  revalidatePath("/requests");
+  revalidatePath("/balances");
+
+  return { ok: true, requestId, newStatus: row?.status ?? "unknown" };
 }

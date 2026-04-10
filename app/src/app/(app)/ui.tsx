@@ -69,7 +69,7 @@ export function StubBanner({ children }: { children: ReactNode }) {
 export function StatusBadge({
   status,
 }: {
-  status: "pending" | "approved" | "denied";
+  status: "pending" | "approved" | "denied" | "cancelled";
 }) {
   const styles = {
     pending:
@@ -78,11 +78,14 @@ export function StatusBadge({
       "border-emerald-300 bg-emerald-50 text-emerald-900 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-200",
     denied:
       "border-red-300 bg-red-50 text-red-900 dark:border-red-900 dark:bg-red-950 dark:text-red-200",
+    cancelled:
+      "border-zinc-300 bg-zinc-50 text-zinc-600 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-400",
   };
   const labels = {
     pending: "Pending",
     approved: "Approved",
     denied: "Denied",
+    cancelled: "Cancelled",
   };
   return (
     <span

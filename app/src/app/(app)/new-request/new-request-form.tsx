@@ -135,7 +135,7 @@ export function NewRequestForm({
       setResult(r);
       if (r.ok) {
         // Give the user a beat to read the success banner, then go home.
-        setTimeout(() => router.push("/"), 1400);
+        setTimeout(() => router.push("/"), 3500);
       }
     });
   }

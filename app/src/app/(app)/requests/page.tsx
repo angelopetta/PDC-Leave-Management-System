@@ -4,16 +4,19 @@ import { getCurrentEmployee, isApprover } from "@/lib/auth";
 import { Card, StubBanner, StatusBadge, Avatar } from "../ui";
 import { LEAVE_TYPES, type LeaveTypeCode } from "@/lib/sample-data";
 import { InboxRow, type ConflictEntry } from "./inbox-row";
+import { CancelButton } from "./cancel-button";
+import { OverrideButton } from "./override-button";
 
 export const dynamic = "force-dynamic";
 
-type FilterKey = "all" | "pending" | "approved" | "denied";
+type FilterKey = "all" | "pending" | "approved" | "denied" | "cancelled";
 
 const FILTERS: { key: FilterKey; label: string }[] = [
   { key: "all", label: "All" },
   { key: "pending", label: "Pending" },
   { key: "approved", label: "Approved" },
   { key: "denied", label: "Denied" },
+  { key: "cancelled", label: "Cancelled" },
 ];
 
 type LeaveRequestRow = {
@@ -65,10 +68,11 @@ function formatRange(start: string, end: string): string {
 // 'cancelled' are hidden from this view entirely.
 function toDisplayStatus(
   s: LeaveRequestRow["status"],
-): "pending" | "approved" | "denied" | null {
+): "pending" | "approved" | "denied" | "cancelled" | null {
   if (s === "submitted") return "pending";
   if (s === "approved") return "approved";
   if (s === "denied") return "denied";
+  if (s === "cancelled") return "cancelled";
   return null;
 }
 
@@ -136,7 +140,7 @@ export default async function RequestsPage({
           leave_types(code)
         `,
       )
-      .in("status", ["submitted", "approved", "denied"])
+      .in("status", ["submitted", "approved", "denied", "cancelled"])
       .order("submitted_at", { ascending: false }),
     supabase.rpc("get_auto_approval_mode"),
   ]);
@@ -152,6 +156,7 @@ export default async function RequestsPage({
     pending: rows.filter((r) => r.status === "submitted").length,
     approved: rows.filter((r) => r.status === "approved").length,
     denied: rows.filter((r) => r.status === "denied").length,
+    cancelled: rows.filter((r) => r.status === "cancelled").length,
   };
 
   const visible =
@@ -393,6 +398,7 @@ export default async function RequestsPage({
                         <StatusBadge status={displayStatus} />
                       </td>
                       <td className="py-3 align-top text-right text-xs text-zinc-500 dark:text-zinc-500">
+                        {/* Approver inbox — pending requests */}
                         {isPendingForApprover ? (
                           <InboxRow
                             requestId={r.id}
@@ -401,12 +407,68 @@ export default async function RequestsPage({
                             conflicts={conflictsFor(r)}
                             coverage={coverageFor(r)}
                           />
-                        ) : r.status === "denied" && r.review_notes ? (
+                        ) : null}
+
+                        {/* Employee cancel — own pending or approved requests */}
+                        {!approver &&
+                          me &&
+                          r.employee_id === me.id &&
+                          (r.status === "submitted" ||
+                            r.status === "approved") ? (
+                          <CancelButton
+                            requestId={r.id}
+                            currentStatus={
+                              r.status as "submitted" | "approved"
+                            }
+                          />
+                        ) : null}
+
+                        {/* Approver override — approved or denied requests */}
+                        {approver &&
+                          (r.status === "approved" ||
+                            r.status === "denied") ? (
+                          <div className="flex flex-col items-end gap-1">
+                            <OverrideButton
+                              requestId={r.id}
+                              currentStatus={
+                                r.status as "approved" | "denied"
+                              }
+                            />
+                            {r.review_notes ? (
+                              <div className="mt-0.5 max-w-[16rem] leading-tight">
+                                <div>
+                                  {r.reviewed_at
+                                    ? `${r.status === "denied" ? "Denied" : "Reviewed"} ${r.reviewed_at.slice(0, 10)}`
+                                    : r.status === "denied"
+                                      ? "Denied"
+                                      : "Reviewed"}
+                                </div>
+                                <div
+                                  className="truncate italic text-zinc-400"
+                                  title={r.review_notes}
+                                >
+                                  {r.review_notes}
+                                </div>
+                              </div>
+                            ) : r.reviewed_at ? (
+                              <div>
+                                Reviewed {r.reviewed_at.slice(0, 10)}
+                              </div>
+                            ) : null}
+                          </div>
+                        ) : null}
+
+                        {/* Non-approver: denied/cancelled rows with notes */}
+                        {!approver &&
+                          (r.status === "denied" ||
+                            r.status === "cancelled") &&
+                          r.review_notes ? (
                           <div className="leading-tight">
                             <div>
+                              {r.status === "denied" ? "Denied" : "Cancelled"}
                               {r.reviewed_at
-                                ? `Denied ${r.reviewed_at.slice(0, 10)}`
-                                : "Denied"}
+                                ? ` ${r.reviewed_at.slice(0, 10)}`
+                                : ""}
                             </div>
                             <div
                               className="mt-0.5 max-w-[16rem] truncate italic text-zinc-400"
@@ -415,11 +477,7 @@ export default async function RequestsPage({
                               {r.review_notes}
                             </div>
                           </div>
-                        ) : r.reviewed_at ? (
-                          `Reviewed ${r.reviewed_at.slice(0, 10)}`
-                        ) : (
-                          "—"
-                        )}
+                        ) : null}
                       </td>
                     </tr>
                   );
