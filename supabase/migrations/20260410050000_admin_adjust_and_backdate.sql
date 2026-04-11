@@ -26,7 +26,7 @@ create or replace function public.adjust_entitlement(
   p_fiscal_year      integer,
   p_new_granted      numeric default null,
   p_new_used         numeric default null,
-  p_reason           text    default null
+  p_reason           text
 )
 returns table (
   entitlement_id uuid,
