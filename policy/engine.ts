@@ -204,6 +204,72 @@ export function businessDaysInRange(
   return count;
 }
 
+/**
+ * Trims the input range inward to the nearest business days on either end.
+ *
+ * Walks forward from `startIso` until it lands on a day that is neither a
+ * weekend nor in the `holidays` set (the trimmed start). Walks backward
+ * from `endIso` under the same rule (the trimmed end). Returns null if no
+ * business day exists in the range — callers should treat this as "no
+ * billable days" and reject the request.
+ *
+ * Why this exists: when an employee submits a vacation request that spans
+ * a KI-observed holiday or weekend, `businessDaysInRange` correctly
+ * excludes those days from the day count, but the stored start_date /
+ * end_date would still point at non-working days. That makes downstream
+ * displays (calendar pills, "upcoming leave" rows) misleading — it looks
+ * like the employee is "on vacation" on Easter Monday, when in fact
+ * Easter Monday is a company holiday and nothing is being charged.
+ *
+ * Trimming at the server-action boundary (not inside `evaluateRequest`)
+ * keeps the engine's other checks honest — e.g., the 3-consecutive-week
+ * CEO-approval rule still sees the calendar-day span of the original
+ * request, because "3 weeks away from the office" is 3 weeks regardless
+ * of what fraction of those weeks is holiday.
+ *
+ * Edge cases:
+ *  - Start on a weekend: bumps forward.
+ *  - Start on a holiday: bumps forward.
+ *  - Start on a weekend-holiday (e.g. Sat Dec 26 Boxing Day): bumps
+ *    forward past both.
+ *  - Mirror for end date.
+ *  - Range is entirely weekends/holidays: returns null.
+ *  - Range is a single holiday or weekend day: returns null.
+ *  - After trimming, start > end: returns null (the trimmed window is
+ *    empty even though the original had >=2 days).
+ *  - Trim is idempotent: passing already-trimmed dates back in returns
+ *    the same values.
+ */
+export function trimToBusinessDays(
+  startIso: string,
+  endIso: string,
+  holidays: Set<string>,
+): { trimmedStart: string; trimmedEnd: string } | null {
+  const start = toDate(startIso);
+  const end = toDate(endIso);
+  if (end < start) return null;
+
+  const curS = new Date(start);
+  while (curS <= end) {
+    const dow = curS.getUTCDay();
+    const iso = toIso(curS);
+    if (dow !== 0 && dow !== 6 && !holidays.has(iso)) break;
+    curS.setUTCDate(curS.getUTCDate() + 1);
+  }
+  if (curS > end) return null;
+
+  const curE = new Date(end);
+  while (curE >= curS) {
+    const dow = curE.getUTCDay();
+    const iso = toIso(curE);
+    if (dow !== 0 && dow !== 6 && !holidays.has(iso)) break;
+    curE.setUTCDate(curE.getUTCDate() - 1);
+  }
+  if (curE < curS) return null;
+
+  return { trimmedStart: toIso(curS), trimmedEnd: toIso(curE) };
+}
+
 // ---------------------------------------------------------------------------
 // Engine
 // ---------------------------------------------------------------------------

@@ -5,6 +5,8 @@ import { createClient } from "@/lib/supabase/server";
 import { getCurrentEmployee } from "@/lib/auth";
 import {
   evaluateRequest,
+  trimToBusinessDays,
+  businessDaysInRange,
   type AutoApprovalMode,
   type BlackoutPeriod,
   type DepartmentCoverageContext,
@@ -26,6 +28,13 @@ export type SubmitLeaveRequestResult =
       requestId: string;
       status: "approved" | "submitted";
       days: number;
+      /**
+       * The start/end dates actually written to the row, after trimming
+       * off any leading/trailing weekends or KI-observed holidays. May
+       * differ from what the user picked; the form surfaces this.
+       */
+      startDate: string;
+      endDate: string;
       flags: { clause: string; message: string }[];
       recommendation: "auto_approve" | "review";
       mode: AutoApprovalMode;
@@ -40,6 +49,13 @@ export type LeaveRequestPreview =
   | {
       ok: true;
       days: number;
+      /**
+       * Trimmed range the request would be stored as. Null only if the
+       * selected span contains no business days (caller should treat as
+       * a no-op — the days count above will be 0 in that case).
+       */
+      trimmedStart: string | null;
+      trimmedEnd: string | null;
       blocked: boolean;
       recommendation: "auto_approve" | "review";
       autoApprove: boolean;
@@ -285,9 +301,21 @@ export async function previewLeaveRequest(
 
   const decision: PolicyDecision = evaluateRequest(built.ctx);
 
+  // Preview the trimmed range so the form can tell the user how the
+  // request will actually be stored. `decision.days > 0` implies at least
+  // one business day exists, which in turn implies trimming succeeds, so
+  // the null branch below is only reached when days === 0.
+  const trimmed = trimToBusinessDays(
+    input.startDate,
+    input.endDate,
+    built.ctx.holidays,
+  );
+
   return {
     ok: true,
     days: decision.days,
+    trimmedStart: trimmed?.trimmedStart ?? null,
+    trimmedEnd: trimmed?.trimmedEnd ?? null,
     blocked: decision.blocked,
     recommendation: decision.recommendation,
     autoApprove: decision.autoApprove,
@@ -316,6 +344,9 @@ export async function submitLeaveRequest(
     return { ok: false, error: built.error };
   }
 
+  // Engine decision is computed from the ORIGINAL span. Rules like the
+  // 3-consecutive-week vacation cap need to see the full calendar range
+  // the employee will be away, not the trimmed business-day-only range.
   const decision = evaluateRequest(built.ctx);
 
   if (decision.blocked && decision.blockingCheck) {
@@ -324,6 +355,27 @@ export async function submitLeaveRequest(
       error:
         decision.blockingCheck.message ?? "This request cannot be submitted.",
       clause: decision.blockingCheck.clause,
+    };
+  }
+
+  // Trim leading/trailing weekends and holidays BEFORE writing the row,
+  // so the stored start_date / end_date always reference real billable
+  // business days. The calendar and "upcoming leave" views render pills
+  // directly off start_date..end_date, so trimming here is what prevents
+  // a vacation pill from showing on Easter Monday. See trimToBusinessDays
+  // in policy/engine.ts for the rationale and edge cases.
+  const trimmed = trimToBusinessDays(
+    input.startDate,
+    input.endDate,
+    built.ctx.holidays,
+  );
+  if (!trimmed) {
+    // Unreachable in normal flow — if days > 0 then the trim has at
+    // least one business day. Return a sensible error just in case.
+    return {
+      ok: false,
+      error:
+        "The selected range contains no business days (weekends and holidays are excluded).",
     };
   }
 
@@ -336,8 +388,8 @@ export async function submitLeaveRequest(
     "submit_leave_request",
     {
       p_leave_type_code: input.leaveType,
-      p_start_date: input.startDate,
-      p_end_date: input.endDate,
+      p_start_date: trimmed.trimmedStart,
+      p_end_date: trimmed.trimmedEnd,
       p_days: decision.days,
       p_reason: input.reason,
       p_auto_approve: decision.autoApprove,
@@ -367,6 +419,8 @@ export async function submitLeaveRequest(
     requestId: row.request_id,
     status: row.status as "approved" | "submitted",
     days: decision.days,
+    startDate: trimmed.trimmedStart,
+    endDate: trimmed.trimmedEnd,
     flags,
     recommendation: decision.recommendation,
     mode: built.mode,
@@ -560,7 +614,13 @@ export async function backdateLeaveRequest(input: {
   leaveTypeCode: string;
   startDate: string;
   endDate: string;
-  days: number;
+  /**
+   * Hint from the client form's live day count. Ignored by the server —
+   * the canonical count is recomputed from the trimmed range against the
+   * holidays set we fetch below. Kept in the input for caller ergonomics
+   * and to avoid breaking the form's current shape.
+   */
+  days?: number;
   reason: string;
 }): Promise<BackdateLeaveRequestResult> {
   const me = await getCurrentEmployee();
@@ -570,13 +630,54 @@ export async function backdateLeaveRequest(input: {
     return { ok: false, error: "A reason is required." };
   }
 
+  if (input.endDate < input.startDate) {
+    return { ok: false, error: "End date must be on or after start date." };
+  }
+
   const supabase = await createClient();
+
+  // Backdate intentionally skips the policy engine (it's for recording
+  // leave that was booked before the system went live), but we still
+  // want the stored dates to match real business days so calendars
+  // render correctly. Fetch holidays that overlap the requested range
+  // and trim with the same rules as submit_leave_request.
+  const { data: holidayRows } = await supabase
+    .from("holidays")
+    .select("date")
+    .gte("date", input.startDate)
+    .lte("date", input.endDate);
+  const holidays = new Set(
+    (holidayRows ?? []).map((h: { date: string }) => h.date),
+  );
+
+  const trimmed = trimToBusinessDays(input.startDate, input.endDate, holidays);
+  if (!trimmed) {
+    return {
+      ok: false,
+      error:
+        "The selected range contains no business days (weekends and holidays are excluded).",
+    };
+  }
+
+  const days = businessDaysInRange(
+    trimmed.trimmedStart,
+    trimmed.trimmedEnd,
+    holidays,
+  );
+  if (days <= 0) {
+    return {
+      ok: false,
+      error:
+        "The selected range contains no business days (weekends and holidays are excluded).",
+    };
+  }
+
   const { data, error } = await supabase.rpc("backdate_leave_request", {
     p_employee_id: input.employeeId,
     p_leave_type_code: input.leaveTypeCode,
-    p_start_date: input.startDate,
-    p_end_date: input.endDate,
-    p_days: input.days,
+    p_start_date: trimmed.trimmedStart,
+    p_end_date: trimmed.trimmedEnd,
+    p_days: days,
     p_reason: input.reason.trim(),
   });
 
