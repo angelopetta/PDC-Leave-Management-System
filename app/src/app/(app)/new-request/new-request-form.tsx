@@ -29,10 +29,10 @@ export type MyBalances = Partial<
   Record<LeaveTypeCode, { granted: number; used: number; pending: number }>
 >;
 
-// Inlined copy of the business-day counter from policy/engine.ts. Kept
+// Inlined copies of the business-day helpers from policy/engine.ts. Kept
 // local to avoid a cross-root import in a client bundle; the server
-// action still runs the canonical engine check on submit, so this
-// function is purely for the live UX preview.
+// action still runs the canonical engine check on submit, so these are
+// purely for the live UX preview.
 function businessDaysInRange(
   startIso: string,
   endIso: string,
@@ -52,6 +52,52 @@ function businessDaysInRange(
     cur.setUTCDate(cur.getUTCDate() + 1);
   }
   return count;
+}
+
+function trimToBusinessDays(
+  startIso: string,
+  endIso: string,
+  holidays: Set<string>,
+): { trimmedStart: string; trimmedEnd: string } | null {
+  if (!startIso || !endIso) return null;
+  const start = new Date(startIso + "T00:00:00Z");
+  const end = new Date(endIso + "T00:00:00Z");
+  if (isNaN(start.getTime()) || isNaN(end.getTime())) return null;
+  if (end < start) return null;
+
+  const curS = new Date(start);
+  while (curS <= end) {
+    const dow = curS.getUTCDay();
+    const iso = curS.toISOString().slice(0, 10);
+    if (dow !== 0 && dow !== 6 && !holidays.has(iso)) break;
+    curS.setUTCDate(curS.getUTCDate() + 1);
+  }
+  if (curS > end) return null;
+
+  const curE = new Date(end);
+  while (curE >= curS) {
+    const dow = curE.getUTCDay();
+    const iso = curE.toISOString().slice(0, 10);
+    if (dow !== 0 && dow !== 6 && !holidays.has(iso)) break;
+    curE.setUTCDate(curE.getUTCDate() - 1);
+  }
+  if (curE < curS) return null;
+
+  return {
+    trimmedStart: curS.toISOString().slice(0, 10),
+    trimmedEnd: curE.toISOString().slice(0, 10),
+  };
+}
+
+function formatIsoDate(iso: string): string {
+  const d = new Date(iso + "T00:00:00Z");
+  if (isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    timeZone: "UTC",
+  });
 }
 
 function remainingFor(
@@ -89,6 +135,20 @@ export function NewRequestForm({
     () => businessDaysInRange(startDate, endDate, holidaySet),
     [startDate, endDate, holidaySet],
   );
+
+  // Live trim preview — mirrors what the server action will do before
+  // writing the row. Null when the selected span has no business days.
+  const trimmed = useMemo(
+    () => trimToBusinessDays(startDate, endDate, holidaySet),
+    [startDate, endDate, holidaySet],
+  );
+
+  // True when trimming would actually shift the boundaries. We only show
+  // the explanatory note in that case; for ranges that already land on
+  // business days on both ends, it would be noise.
+  const trimShifts =
+    trimmed !== null &&
+    (trimmed.trimmedStart !== startDate || trimmed.trimmedEnd !== endDate);
 
   const overBalance =
     requestedDays > 0 && remaining !== null && requestedDays > remaining;
@@ -268,6 +328,24 @@ export function NewRequestForm({
                   approval.
                 </>
               ) : null}
+              {trimShifts && trimmed ? (
+                <div className="mt-1 text-[11px] text-zinc-600 dark:text-zinc-400">
+                  Your request will be recorded as{" "}
+                  <span className="font-medium">
+                    {formatIsoDate(trimmed.trimmedStart)}
+                  </span>
+                  {trimmed.trimmedStart !== trimmed.trimmedEnd ? (
+                    <>
+                      {" "}–{" "}
+                      <span className="font-medium">
+                        {formatIsoDate(trimmed.trimmedEnd)}
+                      </span>
+                    </>
+                  ) : null}
+                  . Weekends and KI holidays at the start or end of the
+                  range aren&apos;t counted.
+                </div>
+              ) : null}
             </>
           )}
         </div>
@@ -350,6 +428,21 @@ export function NewRequestForm({
             {result.status === "approved"
               ? `Auto-approved — ${result.days} day${result.days === 1 ? "" : "s"} booked.`
               : `Submitted for review — ${result.days} day${result.days === 1 ? "" : "s"} pending approval.`}
+          </div>
+          <div className="mt-0.5 text-xs text-emerald-800/80 dark:text-emerald-200/70">
+            Recorded as{" "}
+            <span className="font-medium">
+              {formatIsoDate(result.startDate)}
+            </span>
+            {result.startDate !== result.endDate ? (
+              <>
+                {" "}–{" "}
+                <span className="font-medium">
+                  {formatIsoDate(result.endDate)}
+                </span>
+              </>
+            ) : null}
+            .
           </div>
           {result.flags.length > 0 ? (
             <ul className="mt-1 list-disc pl-5 text-xs text-emerald-800/80 dark:text-emerald-200/70">

@@ -38,6 +38,52 @@ function businessDaysInRange(
   return count;
 }
 
+function trimToBusinessDays(
+  startIso: string,
+  endIso: string,
+  holidays: Set<string>,
+): { trimmedStart: string; trimmedEnd: string } | null {
+  if (!startIso || !endIso) return null;
+  const start = new Date(startIso + "T00:00:00Z");
+  const end = new Date(endIso + "T00:00:00Z");
+  if (isNaN(start.getTime()) || isNaN(end.getTime())) return null;
+  if (end < start) return null;
+
+  const curS = new Date(start);
+  while (curS <= end) {
+    const dow = curS.getUTCDay();
+    const iso = curS.toISOString().slice(0, 10);
+    if (dow !== 0 && dow !== 6 && !holidays.has(iso)) break;
+    curS.setUTCDate(curS.getUTCDate() + 1);
+  }
+  if (curS > end) return null;
+
+  const curE = new Date(end);
+  while (curE >= curS) {
+    const dow = curE.getUTCDay();
+    const iso = curE.toISOString().slice(0, 10);
+    if (dow !== 0 && dow !== 6 && !holidays.has(iso)) break;
+    curE.setUTCDate(curE.getUTCDate() - 1);
+  }
+  if (curE < curS) return null;
+
+  return {
+    trimmedStart: curS.toISOString().slice(0, 10),
+    trimmedEnd: curE.toISOString().slice(0, 10),
+  };
+}
+
+function formatIsoDate(iso: string): string {
+  const d = new Date(iso + "T00:00:00Z");
+  if (isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    timeZone: "UTC",
+  });
+}
+
 export function BackdateForm({
   employees,
   leaveTypes,
@@ -64,6 +110,15 @@ export function BackdateForm({
     () => businessDaysInRange(startDate, endDate, holidaySet),
     [startDate, endDate, holidaySet],
   );
+
+  const trimmed = useMemo(
+    () => trimToBusinessDays(startDate, endDate, holidaySet),
+    [startDate, endDate, holidaySet],
+  );
+
+  const trimShifts =
+    trimmed !== null &&
+    (trimmed.trimmedStart !== startDate || trimmed.trimmedEnd !== endDate);
 
   function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -178,6 +233,24 @@ export function BackdateForm({
             <>
               <span className="font-semibold">{days}</span> business day
               {days === 1 ? "" : "s"} (weekends and holidays excluded).
+              {trimShifts && trimmed ? (
+                <div className="mt-1 text-[11px] text-zinc-600 dark:text-zinc-400">
+                  Will be recorded as{" "}
+                  <span className="font-medium">
+                    {formatIsoDate(trimmed.trimmedStart)}
+                  </span>
+                  {trimmed.trimmedStart !== trimmed.trimmedEnd ? (
+                    <>
+                      {" "}–{" "}
+                      <span className="font-medium">
+                        {formatIsoDate(trimmed.trimmedEnd)}
+                      </span>
+                    </>
+                  ) : null}
+                  . Leading/trailing weekends and KI holidays are
+                  trimmed to match the billable range.
+                </div>
+              ) : null}
             </>
           )}
         </div>
